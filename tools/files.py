@@ -1,32 +1,181 @@
 # 파일 조회 기능을 담당하는 코드
 
 import os
+import json
 from send2trash import send2trash
 import shutil
 
 ALLOWED_EXTENSIONS = {".txt", ".py", ".md", ".json", ".csv", ".log"}
 MAX_FILE_SIZE = 1_000_000  # 1MB
 
-def list_files(path: str = ".") -> dict:
-    """지정한 폴더의 파일과 폴더 목록을 반환합니다."""
-    try:
-        abs_path = os.path.abspath(path)
-        if not os.path.exists(abs_path):
-            return {"success": False, "error": f"경로가 존재하지 않습니다: {abs_path}"}
+# 미디어 및 문서 카테고리별 기본 확장자 정의
+FILE_CATEGORIES = {
+    "video": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".flv", ".m4v", ".ts"},
+    "audio": {".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"},
+    "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"},
+    "document": {".pdf", ".txt", ".md", ".docx", ".xlsx", ".pptx", ".hwp", ".csv"}
+}
 
-        items = os.listdir(abs_path)
-        result = [
-            {
-                "name": item,
-                "type": "directory" if os.path.isdir(os.path.join(abs_path, item)) else "file"
-            }
-            for item in items
-        ]
+# 탐색을 아예 건너뛸 윈도우 시스템/보호 폴더 명칭
+EXCLUDE_DIRS = {
+    "$recycle.bin", 
+    "system volume information", 
+    "recovery", 
+    "config.msi",
+    "$winre_backup"
+}
+
+# 프로젝트 루트에 숨김 캐시 파일 경로 지정
+CACHE_FILE = os.path.normpath(os.path.abspath(".search_cache.json"))
+
+def get_unique_filepath(filepath: str) -> str:
+    """동일한 이름의 파일이 이미 존재하면 파일명 뒤에 (1), (2) 등을 붙여 고유한 경로를 반환합니다."""
+    if not os.path.exists(filepath):
+        return filepath
+
+    directory, filename = os.path.split(filepath)
+    name, ext = os.path.splitext(filename)
+
+    counter = 1
+    while True:
+        new_filename = f"{name} ({counter}){ext}"
+        new_filepath = os.path.join(directory, new_filename)
+        if not os.path.exists(new_filepath):
+            return new_filepath
+        counter += 1
+
+def search_files(
+    path: str = ".",
+    keyword: str = "",
+    category: str = "",
+    min_size_mb: float = 0.0,
+    max_size_mb: float = 0.0,
+    recursive: bool = False,
+    max_results: int = 50
+) -> dict:
+    """폴더 내의 항목을 조회하거나, 키워드/카테고리/용량/하위폴더 탐색 조건을 걸어 파일을 검색합니다."""
+    try:
+        clean_path = path.strip()
+        if len(clean_path) == 2 and clean_path[1] == ":":
+            clean_path += "/"
+
+        abs_path = os.path.normpath(os.path.abspath(clean_path))
+        if not os.path.exists(abs_path):
+            return {"success": False, "error": f"지정한 경로가 존재하지 않습니다: {abs_path}"}
+
+        target_extensions = FILE_CATEGORIES.get(category.lower()) if category else None
+        matches = []
+
+        if not recursive:
+            try:
+                entries = os.listdir(abs_path)
+            except PermissionError:
+                return {"success": False, "error": f"폴더 접근 권한이 없습니다: {abs_path}"}
+
+            for item in entries:
+                if item.lower() in EXCLUDE_DIRS or item.startswith("$"):
+                    continue
+                full_path = os.path.join(abs_path, item)
+                is_dir = os.path.isdir(full_path)
+                
+                if keyword and keyword.lower() not in item.lower():
+                    continue
+
+                # 단순 폴더 조회일 때는 용량 검사 패스
+                matches.append({
+                    "name": item,
+                    "path": full_path,
+                    "type": "directory" if is_dir else "file"
+                })
+                if len(matches) >= max_results:
+                    break
+        else:
+            for root, dirs, files in os.walk(abs_path, topdown=True, onerror=None):
+                dirs[:] = [
+                    d for d in dirs 
+                    if d.lower() not in EXCLUDE_DIRS and not d.startswith("$")
+                ]
+
+                for file in files:
+                    ext = os.path.splitext(file)[1].lower()
+
+                    if target_extensions and ext not in target_extensions:
+                        continue
+
+                    if keyword and keyword.lower() not in file.lower():
+                        continue
+
+                    full_path = os.path.join(root, file)
+                    try:
+                        stat = os.stat(full_path)
+                        size_mb = round(stat.st_size / (1024 * 1024), 2)
+
+                        # 용량 조건 필터링
+                        if min_size_mb > 0 and size_mb < min_size_mb:
+                            continue
+                        if max_size_mb > 0 and size_mb > max_size_mb:
+                            continue
+
+                        matches.append({
+                            "name": file,
+                            "path": full_path,
+                            "type": "file",
+                            "size_mb": size_mb,
+                            "extension": ext
+                        })
+                    except (PermissionError, FileNotFoundError, OSError):
+                        continue
+
+                    if len(matches) >= max_results:
+                        break
+
+                if len(matches) >= max_results:
+                    break
+
+        # 검색된 원본 전체를 디스크 캐시에 확실하게 기록
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(matches, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[캐시 저장 실패]: {e}")
+
+        # LLM에게는 요약만 반환
+        return {
+            "success": True,
+            "target_path": abs_path,
+            "total_found": len(matches),
+            "hit_limit": len(matches) >= max_results,
+            "message": f"총 {len(matches)}개 파일이 검색되어 캐시에 보관되었습니다."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def export_search_results_to_file(dest_path: str = "search_result.txt") -> dict:
+    """최근 검색된 파일 목록 전체를 캐시에서 꺼내 텍스트 파일로 저장합니다."""
+    if not os.path.exists(CACHE_FILE):
+        return {"success": False, "error": "저장할 최근 검색 결과가 없습니다. 먼저 검색을 실행해 주세요."}
+
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            cached_results = json.load(f)
+
+        if not cached_results:
+            return {"success": False, "error": "저장할 최근 검색 결과가 비어 있습니다."}
+
+        abs_dest = os.path.normpath(os.path.abspath(dest_path))
+        safe_path = get_unique_filepath(abs_dest)
+
+        lines = [f"=== 검색 결과 목록 (총 {len(cached_results)}개) ===\n"]
+        for idx, item in enumerate(cached_results, 1):
+            lines.append(f"{idx}. {item['name']} | {item.get('size_mb', 0)}MB | {item['path']}\n")
+
+        with open(safe_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
 
         return {
             "success": True,
-            "path": abs_path,
-            "items": result
+            "saved_count": len(cached_results),
+            "saved_path": safe_path
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -119,50 +268,55 @@ def move_file(source_path: str, dest_path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def search_files(path: str = ".", keyword: str = "") -> dict:
-    """지정한 폴더 내에서 특정 키워드가 포함된 파일이나 폴더를 빠르게 찾아냅니다."""
-    try:
-        abs_path = os.path.abspath(path)
-        if not os.path.exists(abs_path):
-            return {"success": False, "error": f"경로가 존재하지 않습니다: {abs_path}"}
-
-        matches = []
-        # 지정한 경로 1단계 탐색 (원할 경우 os.walk로 하위까지 확장 가능)
-        for item in os.listdir(abs_path):
-            if keyword.lower() in item.lower():
-                full_path = os.path.join(abs_path, item)
-                matches.append({
-                    "name": item,
-                    "path": full_path,
-                    "type": "directory" if os.path.isdir(full_path) else "file"
-                })
-
-        return {
-            "success": True,
-            "keyword": keyword,
-            "total_matches": len(matches),
-            "matches": matches
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
 # 도구 정의 리스트 (각 도구를 별도 딕셔너리로 분리)
 FILES_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "list_files",
-            "description": "지정한 폴더의 파일 및 디렉터리 목록을 확인합니다.",
+            "name": "search_files",
+            "description": "폴더 내의 파일/폴더 목록을 조회하거나, 키워드·카테고리·용량(MB)·하위폴더(재귀) 조건으로 파일을 검색합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "확인할 폴더 경로 (기본값: 현재 폴더 '.')"
+                        "description": "조회 또는 검색할 기준 폴더 경로 (기본값: '.')"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "파일명이나 폴더명에 포함될 검색어 (단순 목록 조회 시 비워둠)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["video", "audio", "image", "document"],
+                        "description": "파일 종류 필터 (동영상 요청 시 'video', 문서 요청 시 'document' 지정)"
+                    },
+                    "min_size_mb": {
+                        "type": "number",
+                        "description": "최소 파일 크기 단위: MB (예: 1GB 이상이면 1024)"
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "하위 폴더까지 깊숙이 뒤질지 여부 (기본값: false)"
                     }
                 },
                 "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_search_results_to_file",
+            "description": "최근 수행한 search_files 검색 결과 전체 목록을 텍스트 파일로 저장합니다. 대량 검색 결과를 파일로 저장하라는 사용자 요청 시 호출합니다.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dest_path": {
+                        "type": "string",
+                        "description": "저장할 파일 경로 및 파일명 (기본값: 'search_result.txt')"
+                    }
+                }
             }
         }
     },
@@ -239,27 +393,6 @@ FILES_SCHEMAS = [
                     }
                 },
                 "required": ["source_path", "dest_path"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_files",
-            "description": "특정 폴더 안에서 이름에 키워드가 포함된 파일이나 디렉터리를 빠르게 검색합니다.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "검색을 시작할 폴더 경로 (예: 'E:/', '.')"
-                    },
-                    "keyword": {
-                        "type": "string",
-                        "description": "찾고자 하는 파일명이나 확장자 일부 (예: 'move_test', '.txt')"
-                    }
-                },
-                "required": ["path", "keyword"]
             }
         }
     }
