@@ -150,8 +150,8 @@ def search_files(
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def export_search_results_to_file(dest_path: str = "search_result.txt") -> dict:
-    """최근 검색된 파일 목록 전체를 캐시에서 꺼내 텍스트 파일로 저장합니다."""
+def export_search_results_to_file(dest_path: str = "search_result.txt", keyword: str = "") -> dict:
+    """최근 검색 결과 캐시에서 전체 또는 특정 키워드가 포함된 목록만 텍스트 파일로 저장합니다."""
     if not os.path.exists(CACHE_FILE):
         return {"success": False, "error": "저장할 최근 검색 결과가 없습니다. 먼저 검색을 실행해 주세요."}
 
@@ -162,11 +162,22 @@ def export_search_results_to_file(dest_path: str = "search_result.txt") -> dict:
         if not cached_results:
             return {"success": False, "error": "저장할 최근 검색 결과가 비어 있습니다."}
 
+        # 키워드가 들어온 경우 캐시 내에서 2차 필터링
+        if keyword.strip():
+            clean_kw = keyword.strip().lower()
+            target_list = [item for item in cached_results if clean_kw in item["name"].lower()]
+        else:
+            target_list = cached_results
+
+        if not target_list:
+            return {"success": False, "error": f"검색 결과 중 '{keyword}'(이)가 포함된 파일이 없습니다."}
+
         abs_dest = os.path.normpath(os.path.abspath(dest_path))
         safe_path = get_unique_filepath(abs_dest)
 
-        lines = [f"=== 검색 결과 목록 (총 {len(cached_results)}개) ===\n"]
-        for idx, item in enumerate(cached_results, 1):
+        title_kw = f" [필터: '{keyword}']" if keyword.strip() else ""
+        lines = [f"=== 검색 결과 목록{title_kw} (총 {len(target_list)}개) ===\n"]
+        for idx, item in enumerate(target_list, 1):
             lines.append(f"{idx}. {item['name']} | {item.get('size_mb', 0)}MB | {item['path']}\n")
 
         with open(safe_path, "w", encoding="utf-8") as f:
@@ -174,7 +185,7 @@ def export_search_results_to_file(dest_path: str = "search_result.txt") -> dict:
 
         return {
             "success": True,
-            "saved_count": len(cached_results),
+            "saved_count": len(target_list),
             "saved_path": safe_path
         }
     except Exception as e:
@@ -268,6 +279,36 @@ def move_file(source_path: str, dest_path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def check_in_last_search(keyword: str) -> dict:
+    """최근 검색된 파일 캐시(.search_cache.json) 내에서 특정 키워드가 포함된 항목이 있는지 확인합니다."""
+    if not os.path.exists(CACHE_FILE):
+        return {"success": False, "error": "최근 검색 결과가 없습니다. 먼저 파일 검색을 실행해 주세요."}
+
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            cached_results = json.load(f)
+
+        if not cached_results:
+            return {"success": False, "error": "최근 검색 결과가 비어 있습니다."}
+
+        # 대소문자 구분 없이 키워드 매칭
+        clean_kw = keyword.strip().lower()
+        matched = [
+            {"name": item["name"], "size_mb": item.get("size_mb", 0), "path": item["path"]}
+            for item in cached_results
+            if clean_kw in item["name"].lower()
+        ]
+
+        return {
+            "success": True,
+            "keyword": keyword,
+            "found": len(matched) > 0,
+            "total_matched": len(matched),
+            "matches": matched[:5]  # LLM 컨텍스트 보호를 위해 최대 5개까지만 노출
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # 도구 정의 리스트 (각 도구를 별도 딕셔너리로 분리)
 FILES_SCHEMAS = [
     {
@@ -295,6 +336,10 @@ FILES_SCHEMAS = [
                         "type": "number",
                         "description": "최소 파일 크기 단위: MB (예: 1GB 이상이면 1024)"
                     },
+                    "max_size_mb": {
+                        "type": "number",
+                        "description": "최대 파일 크기 단위: MB (예: 2GB 이하이면 2048)"
+                    },
                     "recursive": {
                         "type": "boolean",
                         "description": "하위 폴더까지 깊숙이 뒤질지 여부 (기본값: false)"
@@ -308,15 +353,20 @@ FILES_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "export_search_results_to_file",
-            "description": "최근 수행한 search_files 검색 결과 전체 목록을 텍스트 파일로 저장합니다. 대량 검색 결과를 파일로 저장하라는 사용자 요청 시 호출합니다.",
+            "description": "최근 검색된 파일 목록을 텍스트 파일(.txt)로 저장합니다. 전체를 저장하거나, 특정 단어가 포함된 것만 골라서 저장할 수 있습니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "dest_path": {
                         "type": "string",
-                        "description": "저장할 파일 경로 및 파일명 (기본값: 'search_result.txt')"
+                        "description": "저장할 파일 경로 (예: 'F:\\search_result.txt')"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "특정 단어가 포함된 항목만 필터링하여 저장하려는 경우 지정 (기본값: 전체 저장)"
                     }
-                }
+                },
+                "required": ["dest_path"]
             }
         }
     },
@@ -393,6 +443,23 @@ FILES_SCHEMAS = [
                     }
                 },
                 "required": ["source_path", "dest_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_in_last_search",
+            "description": "최근 검색된 파일 결과 목록 내에서 사용자가 언급한 특정 단어나 파일명이 포함되어 있는지 빠르게 확인합니다. 사용자가 '그중에 ~ 파일 있어?'라고 물을 때 호출합니다.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "찾으려는 파일명이나 키워드 (예: '어벤져스', '키코드')"
+                    }
+                },
+                "required": ["keyword"]
             }
         }
     }
