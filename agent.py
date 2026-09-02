@@ -7,7 +7,12 @@ import json
 import ollama
 from tools import ALL_SCHEMAS, execute_tool
 
-MODEL = "qwen3:30b-a3b"
+# 기존 모델
+# MODEL = "qwen3:30b-a3b"
+
+# 테스트용 모델
+MODEL = "huihui_ai/qwen2.5-abliterate:14b"
+
 START_PROMPT = "Local Agent 시작 (종료: exit 또는 quit)\n" + "-" * 40
 END_PROMPT = "Local Agent를 종료합니다."
 EXIT_COMMANDS = ["exit", "quit"]
