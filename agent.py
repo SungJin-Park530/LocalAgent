@@ -4,18 +4,30 @@
 # 중요 라이브러리 import
 import os
 import json
+import re
 import ollama
 from tools import ALL_SCHEMAS, execute_tool
+from config.settings import MODEL_PROFILES, DEFAULT_PROFILE
 
-# 기존 모델
-# MODEL = "qwen3:30b-a3b"
-
-# 테스트용 모델
-MODEL = "huihui_ai/qwen2.5-abliterate:14b"
+# 사용 모델
+active_profile = MODEL_PROFILES[DEFAULT_PROFILE]
+current_model_name = active_profile["name"]
+current_options = active_profile["options"]
 
 START_PROMPT = "Local Agent 시작 (종료: exit 또는 quit)\n" + "-" * 40
 END_PROMPT = "Local Agent를 종료합니다."
 EXIT_COMMANDS = ["exit", "quit"]
+
+# <think> 사고 과정 제거 헬퍼 함수
+def clean_model_output(text: str) -> str:
+    """<think>...</think> 태그 블록 및 잔여 태그를 걷어냅니다."""
+    if not text:
+        return ""
+    # 닫힌 태그 전체 제거
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # 태그가 덜 닫혔거나 홀로 남은 </think>, <think> 찌꺼기 제거
+    text = re.sub(r"</?think>", "", text)
+    return text.strip()
 
 # 시스템 프롬프트 불러오기 함수
 def load_system_prompt(file_path: str = "prompts/system.md") -> str:
@@ -28,7 +40,7 @@ def load_system_prompt(file_path: str = "prompts/system.md") -> str:
     with open(file_path, "r", encoding="utf-8") as f:
         return f.read().strip()
 
-# messages 초기화 부분
+# messages 초기화
 system_prompt = load_system_prompt()
 messages = [{"role": "system", "content": system_prompt}]
 
@@ -47,16 +59,16 @@ while True:
     # 에이전트 작업 루프: 도구 호출이 끝날 때까지 자동 반복
     while True:
         response = ollama.chat(
-            model=MODEL,
+            model=current_model_name,
             messages=messages,
-            tools=ALL_SCHEMAS
+            tools=ALL_SCHEMAS,
+            options=current_options
         )
         message = response["message"]
         messages.append(message)
 
         # 1. 정식 tool_calls 처리
         if message.get("tool_calls"):
-            
             just_exported_file = None
             executed_calls = set()
             
@@ -65,12 +77,12 @@ while True:
                 raw_args = tool_call["function"]["arguments"]
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                 
-                # 검색 결과 저장 이후 write_file로 덮어쓰려 한다면 스킵한다
+                # 검색 결과 저장 직후 write_file로 덮어쓰기 시도 차단
                 if func_name == "write_file" and just_exported_file and args.get("path") == just_exported_file:
                     print(f"\n[알림] 방금 export된 파일을 덮어쓰려 하므로 스킵합니다: {just_exported_file}")
                     continue
                 
-                # 완전히 동일한 도구 연속 호출 차단
+                # 동일 도구 연속 중복 호출 차단
                 call_signature = f"{func_name}_{json.dumps(args, sort_keys=True)}"
                 if call_signature in executed_calls:
                     continue
@@ -88,28 +100,30 @@ while True:
                 })
             continue
 
-        # 2. 텍스트 본문 추출
-        content_text = message.get("content", "").strip()
+        # 2. 텍스트 본문 추출 및 <think> 정제
+        raw_content = message.get("content", "")
+        content_text = clean_model_output(raw_content)
 
-        # 만약 모델이 JSON 형태로 툴 호출을 텍스트로 보냈을 때의 폴백
-        if content_text.startswith("{") and "name" in content_text and "arguments" in content_text:
+        # 3. 폴백 도구 호출 (정규 tool_call을 안 뱉고 오직 순수 JSON만 보냈을 때만 엄격하게 검증)
+        if content_text.startswith("{") and content_text.endswith("}") and "name" in content_text:
             try:
                 fallback_call = json.loads(content_text)
                 func_name = fallback_call.get("name")
                 args = fallback_call.get("arguments", {})
 
-                print(f"\n[Fallback Tool Call] {func_name}({args})")
-                tool_result = execute_tool(func_name, args)
+                if func_name:
+                    print(f"\n[Fallback Tool Call] {func_name}({args})")
+                    tool_result = execute_tool(func_name, args)
 
-                messages.append({
-                    "role": "tool",
-                    "content": json.dumps(tool_result, ensure_ascii=False)
-                })
-                continue
+                    messages.append({
+                        "role": "tool",
+                        "content": json.dumps(tool_result, ensure_ascii=False)
+                    })
+                    continue
             except json.JSONDecodeError:
                 pass
 
-        # 3. 모델이 content를 비운 채 종료했을 때 방어
+        # 4. 모델이 content를 비운 채 종료했을 때 방어
         if not content_text:
             print("\n[알림] 모델 추론 완료 후 응답 텍스트를 구성 중입니다...")
             messages.append({

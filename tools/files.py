@@ -4,17 +4,11 @@ import os
 import json
 from send2trash import send2trash
 import shutil
+from config.categories import FILE_CATEGORIES
+from config.settings import CACHE_FILE_PATH, DEFAULT_EXPORT_PATH
 
 ALLOWED_EXTENSIONS = {".txt", ".py", ".md", ".json", ".csv", ".log"}
 MAX_FILE_SIZE = 1_000_000  # 1MB
-
-# 미디어 및 문서 카테고리별 기본 확장자 정의
-FILE_CATEGORIES = {
-    "video": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".flv", ".m4v", ".ts"},
-    "audio": {".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"},
-    "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"},
-    "document": {".pdf", ".txt", ".md", ".docx", ".xlsx", ".pptx", ".hwp", ".csv"}
-}
 
 # 탐색을 아예 건너뛸 윈도우 시스템/보호 폴더 명칭
 EXCLUDE_DIRS = {
@@ -26,7 +20,7 @@ EXCLUDE_DIRS = {
 }
 
 # 프로젝트 루트에 숨김 캐시 파일 경로 지정
-CACHE_FILE = os.path.normpath(os.path.abspath(".search_cache.json"))
+CACHE_FILE = os.path.normpath(os.path.abspath(CACHE_FILE_PATH))
 
 def get_unique_filepath(filepath: str) -> str:
     """동일한 이름의 파일이 이미 존재하면 파일명 뒤에 (1), (2) 등을 붙여 고유한 경로를 반환합니다."""
