@@ -1,4 +1,6 @@
-prompts/system.md
+# Local prompts (for example: 01_persona.md)
+prompts/[0-9][0-9]_*.md
+!prompts/*.md.example
 
 # Virtual environments
 .venv/
@@ -27,3 +29,6 @@ cache/
 build/
 dist/
 *.egg-info/
+
+# etc
+legacy/

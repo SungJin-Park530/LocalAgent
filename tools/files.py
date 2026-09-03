@@ -1,23 +1,15 @@
 # 파일 조회 기능을 담당하는 코드
 
 import os
+import re
 import json
 from send2trash import send2trash
 import shutil
-from config.categories import FILE_CATEGORIES
+from config.categories import FILE_CATEGORIES, EXCLUDE_DIRS
 from config.settings import CACHE_FILE_PATH, DEFAULT_EXPORT_PATH
 
 ALLOWED_EXTENSIONS = {".txt", ".py", ".md", ".json", ".csv", ".log"}
 MAX_FILE_SIZE = 1_000_000  # 1MB
-
-# 탐색을 아예 건너뛸 윈도우 시스템/보호 폴더 명칭
-EXCLUDE_DIRS = {
-    "$recycle.bin", 
-    "system volume information", 
-    "recovery", 
-    "config.msi",
-    "$winre_backup"
-}
 
 # 프로젝트 루트에 숨김 캐시 파일 경로 지정
 CACHE_FILE = os.path.normpath(os.path.abspath(CACHE_FILE_PATH))
@@ -49,11 +41,16 @@ def search_files(
 ) -> dict:
     """폴더 내의 항목을 조회하거나, 키워드/카테고리/용량/하위폴더 탐색 조건을 걸어 파일을 검색합니다."""
     try:
-        clean_path = path.strip()
-        if len(clean_path) == 2 and clean_path[1] == ":":
-            clean_path += "/"
+        clean_path = path.strip().strip("'\"")
+    
+        # "D:" 또는 "d:" 처럼 슬래시 없는 드라이브 문자가 들어온 경우 강제로 루트 경로로 보정
+        if re.match(r"^[a-zA-Z]:$", clean_path):
+            clean_path += "\\"
+        elif re.match(r"^[a-zA-Z]:[\\/]+$", clean_path):
+            clean_path = clean_path[:2] + "\\"
 
         abs_path = os.path.normpath(os.path.abspath(clean_path))
+                
         if not os.path.exists(abs_path):
             return {"success": False, "error": f"지정한 경로가 존재하지 않습니다: {abs_path}"}
 
@@ -84,15 +81,24 @@ def search_files(
                 if len(matches) >= max_results:
                     break
         else:
+            scanned_count = 0
+            MAX_SCANNED_LIMIT = 50000
+            
             for root, dirs, files in os.walk(abs_path, topdown=True, onerror=None):
                 dirs[:] = [
                     d for d in dirs 
-                    if d.lower() not in EXCLUDE_DIRS and not d.startswith("$")
+                    if d.lower() not in EXCLUDE_DIRS and not d.startswith("$") and not d.startswith(".")
                 ]
 
                 for file in files:
+                    scanned_count += 1
+                    
+                    if scanned_count >= MAX_SCANNED_LIMIT:
+                        print(f"[Scan Limit Reached] 최대 스캔 한도 {MAX_SCANNED_LIMIT}개에 도달했습니다.")
+                        dirs.clear()
+                        break
+                    
                     ext = os.path.splitext(file)[1].lower()
-
                     if target_extensions and ext not in target_extensions:
                         continue
 
@@ -100,30 +106,42 @@ def search_files(
                         continue
 
                     full_path = os.path.join(root, file)
-                    try:
-                        stat = os.stat(full_path)
-                        size_mb = round(stat.st_size / (1024 * 1024), 2)
+                    
+                    size_mb = 0
+                    need_stat = (min_size_mb > 0) or (max_size_mb > 0)
+                    
+                    # 파일의 크기를 확인해야 할 때만 검사
+                    if need_stat:
+                        try:
+                            stat = os.stat(full_path)
+                            size_mb = round(stat.st_size / (1024 * 1024), 2)
 
-                        # 용량 조건 필터링
-                        if min_size_mb > 0 and size_mb < min_size_mb:
-                            continue
-                        if max_size_mb > 0 and size_mb > max_size_mb:
-                            continue
+                            # 용량 조건 필터링
+                            if min_size_mb > 0 and size_mb < min_size_mb:
+                                continue
+                            if max_size_mb > 0 and size_mb > max_size_mb:
+                                continue
 
-                        matches.append({
-                            "name": file,
-                            "path": full_path,
-                            "type": "file",
-                            "size_mb": size_mb,
-                            "extension": ext
-                        })
-                    except (PermissionError, FileNotFoundError, OSError):
-                        continue
+                        except (PermissionError, FileNotFoundError, OSError):
+                            continue
+                    else:
+                        try:
+                            size_mb = round(os.path.getsize(full_path) / (1024 * 1024), 2)
+                        except OSError:
+                            size_mb = 0.0
+                    
+                    matches.append({
+                        "name": file,
+                        "path": full_path,
+                        "type": "file",
+                        "size_mb": size_mb,
+                        "extension": ext
+                    })
 
                     if len(matches) >= max_results:
                         break
 
-                if len(matches) >= max_results:
+                if len(matches) >= max_results or scanned_count >= MAX_SCANNED_LIMIT:
                     break
 
         # 검색된 원본 전체를 디스크 캐시에 확실하게 기록

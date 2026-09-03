@@ -30,18 +30,32 @@ def clean_model_output(text: str) -> str:
     return text.strip()
 
 # 시스템 프롬프트 불러오기 함수
-def load_system_prompt(file_path: str = "prompts/system.md") -> str:
-    if not os.path.exists(file_path):
-        example_path = file_path + ".example"
-        raise FileNotFoundError(
-            f"\n[오류] '{file_path}' 파일이 없습니다.\n"
-            f"'{example_path}' 파일을 복사하여 '{file_path}'로 이름을 바꾼 후 페르소나를 설정해 주세요!"
-        )
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+def load_system_prompts(prompts_dir: str = "prompts") -> str:
+    """prompts 폴더 내의 .md 파일들을 정렬하여 순서대로 결합합니다."""
+    if not os.path.exists(prompts_dir):
+        raise FileNotFoundError(f"[오류] 프롬프트 디렉터리를 찾을 수 없습니다: {prompts_dir}")
 
-# messages 초기화
-system_prompt = load_system_prompt()
+    md_files = sorted([f for f in os.listdir(prompts_dir) if f.endswith(".md")])
+    if not md_files:
+        example_files = [f for f in os.listdir(prompts_dir) if f.endswith(".md.example")]
+        guide = "\n".join([f"- {f} -> {f.replace('.example', '')}" for f in example_files])
+        raise FileNotFoundError(
+            f"\n[오류] '{prompts_dir}' 폴더에 활성화된 .md 파일이 없습니다.\n"
+            f"다음 예시 파일들을 복사하여 .md 파일을 생성해 주세요:\n{guide}"
+        )
+
+    combined = []
+    for file_name in md_files:
+        path = os.path.join(prompts_dir, file_name)
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if content:
+                combined.append(content)
+
+    return "\n\n---\n\n".join(combined)
+
+# 초기화
+system_prompt = load_system_prompts()
 messages = [{"role": "system", "content": system_prompt}]
 
 print(START_PROMPT)
