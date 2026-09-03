@@ -24,33 +24,33 @@ PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
 
 # 모델 풀 설정
 AVAILABLE_MODELS = {
-    "default": "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b",
-    "qwen_30b": "qwen3:30b-a3b"
+    "default": "모델명",
+    "sub_model": "모델명"
 }
 
 CURRENT_MODEL = AVAILABLE_MODELS["default"]
 
 # 모델별 최적 파라미터 매핑
 MODEL_PROFILES = {
-    "qwen_9b": {
-        "name": "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b",
+    "default_model": {
+        "name": "모델명",
         "options": {
             "num_ctx": 16384,
             "num_predict": 1024,
             "temperature": 0.7,
-            "description": "무검열 경량 모델"
+            "description": "기본 모델"
         }
     },
-    "qwen_30b": {
-        "name": "qwen3:30b-a3b",
+    "sub_model": {
+        "name": "모델명",
         "options": {
-            "num_ctx": 4096,       # 대형 모델은 4k~8k로 타이트하게 관리
+            "num_ctx": 16384,
             "num_predict": 1024,
-            "temperature": 0.6,
-            "description": "대형 모델"
+            "temperature": 0.7,
+            "description": "서브 모델"
         }
     }
 }
 
 # 기본 선택 프로필
-DEFAULT_PROFILE = "qwen_9b"
+DEFAULT_PROFILE = "default_model"
