@@ -14,6 +14,73 @@ MAX_FILE_SIZE = 1_000_000  # 1MB
 # 프로젝트 루트에 숨김 캐시 파일 경로 지정
 CACHE_FILE = os.path.normpath(os.path.abspath(CACHE_FILE_PATH))
 
+def search_folders(
+    path: str = ".",
+    keyword: str = "",
+    recursive: bool = False,
+    max_results: int = 50
+) -> dict:
+    """디렉터리(폴더) 목록만 빠르게 조회하거나 키워드로 폴더를 검색합니다."""
+    try:
+        clean_path = path.strip().strip("'\"")
+        if re.match(r"^[a-zA-Z]:$", clean_path):
+            clean_path += "\\"
+        elif re.match(r"^[a-zA-Z]:[\\/]+$", clean_path):
+            clean_path = clean_path[:2] + "\\"
+
+        abs_path = os.path.normpath(os.path.abspath(clean_path))
+        if not os.path.exists(abs_path):
+            return {"success": False, "error": f"경로가 존재하지 않습니다: {abs_path}"}
+
+        folders = []
+        kw_lower = keyword.strip().lower() if keyword else ""
+
+        if not recursive:
+            # 1단계 폴더만 초고속 스캔 (os.scandir 사용으로 최단 시간 응답)
+            with os.scandir(abs_path) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        name = entry.name
+                        if name.lower() in EXCLUDE_DIRS or name.startswith(("$", ".")):
+                            continue
+                        if kw_lower and kw_lower not in name.lower():
+                            continue
+                        folders.append({"name": name, "path": entry.path})
+                        if len(folders) >= max_results:
+                            break
+        else:
+            # 하위 폴더 트리 탐색 (파일 순회는 전혀 하지 않음)
+            scanned_dir_count = 0
+            MAX_DIR_SCAN = 10000
+
+            for root, dirs, _ in os.walk(abs_path, topdown=True, onerror=None):
+                dirs[:] = [
+                    d for d in dirs
+                    if d.lower() not in EXCLUDE_DIRS and not d.startswith(("$", "."))
+                ]
+                scanned_dir_count += len(dirs)
+
+                for d in dirs:
+                    if kw_lower and kw_lower not in d.lower():
+                        continue
+                    folders.append({"name": d, "path": os.path.join(root, d)})
+                    if len(folders) >= max_results:
+                        dirs.clear()
+                        break
+
+                if len(folders) >= max_results or scanned_dir_count >= MAX_DIR_SCAN:
+                    break
+
+        return {
+            "success": True,
+            "target_path": abs_path,
+            "total_found": len(folders),
+            "folders": folders,
+            "message": f"총 {len(folders)}개 폴더를 확인했습니다."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 def get_unique_filepath(filepath: str) -> str:
     """동일한 이름의 파일이 이미 존재하면 파일명 뒤에 (1), (2) 등을 붙여 고유한 경로를 반환합니다."""
     if not os.path.exists(filepath):
@@ -323,6 +390,31 @@ def check_in_last_search(keyword: str) -> dict:
 
 # 도구 정의 리스트 (각 도구를 별도 딕셔너리로 분리)
 FILES_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_folders",
+            "description": "지정한 경로의 하위 폴더(디렉터리) 목록만 빠르게 확인하거나 특정 이름을 가진 폴더를 찾습니다. 파일은 검색하지 않으며 폴더 트리 파악에 매우 빠릅니다.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "조회할 기준 폴더 경로 (예: 'D:\\' 또는 '.')"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "찾으려는 폴더명 키워드 (전체 1단계 폴더 목록을 볼 때는 비워둠)"
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "하위 폴더 깊숙이 찾을지 여부. 단순히 최상위 폴더 목록만 볼 때는 false"
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
