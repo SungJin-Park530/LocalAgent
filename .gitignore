@@ -24,6 +24,7 @@ cache/
 .env
 .env.*
 !.env.example
+config/settings.py
 
 # Build artifacts
 build/

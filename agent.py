@@ -11,12 +11,28 @@ from config.settings import MODEL_PROFILES, DEFAULT_PROFILE
 
 # 사용 모델
 active_profile = MODEL_PROFILES[DEFAULT_PROFILE]
+current_profile_key = DEFAULT_PROFILE
 current_model_name = active_profile["name"]
 current_options = active_profile["options"]
 
 START_PROMPT = "Local Agent 시작 (종료: exit 또는 quit)\n" + "-" * 40
 END_PROMPT = "Local Agent를 종료합니다."
 EXIT_COMMANDS = ["exit", "quit"]
+
+# 모델 목록 표시
+def show_model_list(current_key: str):
+    """현재 모델 목록과 사용 중인 모델을 안내합니다."""
+    print("\n" + "=" * 50)
+    print(" [모델 프로필 목록]")
+    for key, prof in MODEL_PROFILES.items():
+        marker = "▶ (사용 중)" if key == current_key else "  "
+        # model_name 또는 model 키를 안전하게 탐색
+        name = prof.get("name")
+        desc = prof.get("description", "설명 없음")
+        print(f" {marker} [{key}] : {name} - {desc}")
+    print("-" * 50)
+    print(" 변경 방법: /model <이름>  (예: /model 14b)")
+    print("=" * 50 + "\n")
 
 # <think> 사고 과정 제거 헬퍼 함수
 def clean_model_output(text: str) -> str:
@@ -67,6 +83,38 @@ while True:
     if user_input.lower() in EXIT_COMMANDS:
         print(END_PROMPT)
         break
+    
+    # -- CLI 명령어 인터셉트 --
+    if user_input.startswith("/"):
+        parts = user_input.split()
+        cmd = parts[0].lower()
+        args = parts[1:] if len(parts) > 1 else []
+
+        if cmd == "/model":
+            if not args:
+                show_model_list(current_profile_key)
+            else:
+                target_key = args[0].lower()
+                if target_key in MODEL_PROFILES:
+                    current_profile_key = target_key
+                    active_model = MODEL_PROFILES[target_key]
+                    print(f"\n[시스템] 모델 전환 완료: [{target_key}] ({active_model['name']})")
+                    print(f"[시스템] 적용 온도(Temperature): {active_model.get('temperature', 0.7)}")
+                else:
+                    print(f"\n[오류] 등록되지 않은 프로필입니다: '{target_key}'")
+                    show_model_list(current_profile_key)
+            continue  # 모델 호출 루프로 가지 않고 다음 You: 입력으로 복귀
+
+        elif cmd == "/clear":
+            # 대화 맥락 초기화 (시스템 프롬프트만 유지)
+            messages = [{"role": "system", "content": system_prompt}]
+            print("\n[시스템] 대화 히스토리가 초기화되었습니다.")
+            continue
+
+        else:
+            print(f"\n[오류] 지원하지 않는 명령어입니다: {cmd} (사용 가능: /model, /clear)")
+            continue
+        # -- CLI 명령어 인터셉트 종료 --
 
     messages.append({"role": "user", "content": user_input})
 
