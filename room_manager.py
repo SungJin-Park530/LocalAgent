@@ -1,6 +1,7 @@
 # 채팅방 관리자 코드
 import os
 from tools import ALL_SCHEMAS
+from tools.chat_utils import CHAT_SCHEMAS
 
 PROMPTS_DIR = "prompts"
 
@@ -54,7 +55,7 @@ def get_default_rooms() -> dict:
         "room_chat": {
             "name": "💬 기본 잡담방",
             "prompt_files": ["01_persona.md", "02_chat.md"],
-            "tools": [],
+            "tools": [CHAT_SCHEMAS[0]],
             "messages": []
         },
         "room_agent": {
