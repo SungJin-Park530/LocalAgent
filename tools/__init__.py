@@ -1,18 +1,20 @@
+# 도구 모듈 초기화 및 실행 관리
+
 from .files import FILES_SCHEMAS
-import tools.files as files_module
+from .chat_utils import CHAT_SCHEMAS
+from . import files as files_module
+from . import chat_utils
 
 # 나중에 os_control, web 모듈이 추가되면 여기에 리스트만 더해주면 됩니다.
 ALL_SCHEMAS = [
     *FILES_SCHEMAS,
-    # *OS_CONTROL_SCHEMAS,
-    # *WEB_SCHEMAS,
+    *CHAT_SCHEMAS,
 ]
 
 # 도구 함수를 검색할 모듈 등록
 TOOL_MODULES = [
     files_module,
-    # os_control_module,
-    # web_module,
+    chat_utils,
 ]
 
 def execute_tool(func_name: str, args: dict) -> dict:
