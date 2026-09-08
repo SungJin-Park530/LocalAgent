@@ -5,6 +5,57 @@ from tools.chat_utils import CHAT_SCHEMAS
 
 PROMPTS_DIR = "prompts"
 
+# UI에 표시할 직관적인 도구 이름과 간단 설명 매핑
+TOOL_DISPLAY_MAP = {
+    "get_current_time": {
+        "title": "⏰ 현재 시간 확인",
+        "desc": "현재 날짜, 요일, 시간을 확인합니다."
+    },
+    "get_current_weather": {
+        "title": "🌤️ 현재 날씨 조회",
+        "desc": "특정 도시나 현재 지역의 날씨와 기온을 조회합니다."
+    },
+    "list_directory": {
+        "title": "📂 폴더 목록 조회",
+        "desc": "지정한 경로 내 파일과 하위 폴더 목록을 확인합니다."
+    },
+    "search_files": {
+        "title": "🔍 파일/폴더 검색",
+        "desc": "키워드로 특정 파일이나 폴더를 탐색합니다."
+    },
+    "read_file": {
+        "title": "📄 파일 내용 읽기",
+        "desc": "텍스트 파일의 내용을 읽어옵니다."
+    },
+    "write_file": {
+        "title": "✏️ 새 파일 작성/수정",
+        "desc": "지정한 경로에 텍스트 파일을 새로 작성하거나 덮어씁니다."
+    },
+    "export_search_results_to_file": {
+        "title": "💾 검색 결과 파일 저장",
+        "desc": "탐색 결과를 별도의 텍스트 파일로 내보냅니다."
+    }
+}
+
+def get_available_tool_groups() -> dict:
+    tools_map = {}
+    for schema in ALL_SCHEMAS:
+        func = schema.get("function", {})
+        func_name = func.get("name")
+        if not func_name:
+            continue
+
+        meta = TOOL_DISPLAY_MAP.get(func_name, {})
+        display_title = meta.get("title", func_name)
+        display_desc = meta.get("desc", func.get("description", ""))
+
+        tools_map[func_name] = {
+            "display": f"{display_title} | {display_desc}",
+            "short_title": display_title,
+            "schema": schema
+        }
+    return tools_map
+
 def get_available_prompts(prompts_dir: str = PROMPTS_DIR) -> list[dict]:
     """
     prompts/ 디렉터리 내의 활성화된 .md 파일 목록을 스캔합니다.
@@ -30,22 +81,6 @@ def get_available_prompts(prompts_dir: str = PROMPTS_DIR) -> list[dict]:
         prompt_list.append({"filename": f, "display": title})
         
     return prompt_list
-
-def get_available_tool_groups() -> dict[str, list[dict]]:
-    """
-    현재 등록된 ALL_SCHEMAS 도구들을 UI에서 묶음/단위별로 선택할 수 있도록 매핑합니다.
-    지금은 파일 도구군 위주이므로 '파일 제어' 그룹으로 묶고, 개별 도구 단위도 지원합니다.
-    """
-    # 추후 도구가 늘어나면 함수명 접두사나 별도 태그 기준으로 자동 그룹화 가능
-    tool_map = {}
-    for schema in ALL_SCHEMAS:
-        name = schema["function"]["name"]
-        desc = schema["function"].get("description", "")
-        tool_map[name] = {
-            "schema": schema,
-            "display": f"{name} ({desc[:25]}...)" if len(desc) > 25 else f"{name} ({desc})"
-        }
-    return tool_map
 
 def get_default_rooms() -> dict:
     """

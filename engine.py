@@ -7,23 +7,27 @@ from tools import ALL_SCHEMAS, execute_tool
 from config.settings import MODEL_PROFILES
 
 def clean_model_output(text: str) -> str:
-    """
-    <think>...</think> 태그 블록을 걷어내되, 
-    본문 없이 think 블록만 생성된 경우에는 내부 내용을 살려냅니다.
-    """
     if not text:
         return ""
     
-    # 1. 정상적으로 닫힌 <think>...</think> 뒤에 실제 본문이 있는 경우 정제
+    # 1. <think> 태그 제거
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     cleaned = re.sub(r"</?think>", "", cleaned).strip()
     
-    if cleaned:
-        return cleaned
+    target_text = cleaned if cleaned else re.sub(r"</?think>", "", text).strip()
+    
+    # 2. 동일/유사 문단 자가 반복 방어
+    # 빈 줄 기준으로 문단 분리 후, 모델이 혼자서 가상 턴을 진행한 경우 첫 답변 영역 추출
+    paragraphs = [p.strip() for p in target_text.split("\n\n") if p.strip()]
+    if len(paragraphs) >= 2:
+        # 모델이 "User:" 등을 가상으로 생성하며 혼자 북치고 장구친 경우 차단
+        first_p = paragraphs[0]
+        for fake_role in ["User:", "Human:", "사용자:", "Assistant:"]:
+            if fake_role in target_text:
+                target_text = target_text.split(fake_role)[0].strip()
+                break
 
-    # 2. 본문이 없고 모델이 <think> 내부에만 내용을 채운 경우 태그만 떼고 구출
-    fallback_text = re.sub(r"</?think>", "", text).strip()
-    return fallback_text
+    return target_text
 
 def build_system_prompt(selected_files: list[str], prompts_dir: str = "prompts") -> str:
     """주어진 프롬프트 파일 목록을 읽어 하나의 시스템 프롬프트로 결합합니다."""
@@ -127,26 +131,27 @@ def run_agent_engine(
             except json.JSONDecodeError:
                 pass
 
-        # 4) 빈 본문 방어 및 최대 재시도 제어
+        # 4) 빈 본문 방어 (기존 방식 유지하되 명확히 처리)
         if not content_text:
             retry_count += 1
             if retry_count > MAX_RETRIES:
-                yield {"type": "text", "content": "응답을 구성하는 데 실패했습니다. 다시 말씀해 주세요."}
+                yield {"type": "text", "content": "(답변을 생성하지 못했습니다.)"}
                 break
 
-            if tools:
+            if tools and message.get("tool_calls"):
                 messages.append({
                     "role": "user",
                     "content": "방금 도구 실행 결과를 네 원래 말투와 캐릭터 성격 그대로 살려서 자연스럽게 보고해줘."
                 })
                 continue
             else:
+                # 첫 턴에 생각만 뱉고 본문을 안 썼을 때 정상적으로 답변을 유도
                 messages.append({
                     "role": "user",
                     "content": "생각을 마쳤으면 네 말투 그대로 이어서 자연스럽게 답변해줘."
                 })
                 continue
 
-        # 최종 텍스트 UI 반환
+        # 유효한 본문이 나왔을 때만 단 1회 yield 하고 루프 탈출
         yield {"type": "text", "content": content_text}
         break
