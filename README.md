@@ -2,6 +2,40 @@
 
 Ollama와 로컬 도구를 사용해 파일 작업을 수행하는 간단한 CLI 에이전트입니다.
 
+프로젝트의 주요 디렉토리와 파일은 루트의 실행 및 설정 파일(`agent.py`, `app.py`, `engine.py`, `room_manager.py`, `requirements.txt`)을 중심으로, `config/`에 설정과 카테고리 정의를, `prompts/`에 프롬프트를, `tools/`에 채팅 및 파일 도구를, `cache/`에 검색 캐시를, `search_result/`에 검색 결과를, `legacy/`에 이전 시스템 프롬프트를 저장하는 구조입니다.
+
+```text
+LocalAgent/
+├── agent.py
+├── app.py
+├── engine.py
+├── progress.md
+├── README.md
+├── requirements.txt
+├── room_manager.py
+├── cache/
+│   └── search_cache.json
+├── config/
+│   ├── __init__.py
+│   ├── categories.py
+│   ├── settings.py
+│   └── settings.py.example
+├── legacy/
+│   └── system.md
+├── prompts/
+│   ├── 01_persona.md
+│   ├── 01_persona.md.example
+│   ├── 02_chat.md
+│   ├── 02_general.md.example
+│   ├── 03_files.md
+│   └── 03_files.md.example
+├── search_result/
+└── tools/
+	├── __init__.py
+	├── chat_utils.py
+	└── files.py
+```
+
 ## 준비
 
 - Python 3 설치
