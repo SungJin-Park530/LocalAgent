@@ -1,18 +1,19 @@
-# 파일 조회 기능을 담당하는 코드
+# 파일 조회 및 파일 입출력 기능을 담당하는 도구 모듈
 
 import os
 import re
 import json
-from send2trash import send2trash
 import shutil
+from send2trash import send2trash
 from config.categories import FILE_CATEGORIES, EXCLUDE_DIRS
-from config.settings import CACHE_FILE_PATH, DEFAULT_EXPORT_PATH
+from config.settings import CACHE_FILE_PATH, EXPORT_DIR, DEFAULT_EXPORT_FILENAME, MAX_SCAN_LIMIT
 
 ALLOWED_EXTENSIONS = {".txt", ".py", ".md", ".json", ".csv", ".log"}
 MAX_FILE_SIZE = 1_000_000  # 1MB
 
-# 프로젝트 루트에 숨김 캐시 파일 경로 지정
+# 캐시 파일 정규화 경로
 CACHE_FILE = os.path.normpath(os.path.abspath(CACHE_FILE_PATH))
+
 
 def search_folders(
     path: str = ".",
@@ -36,7 +37,6 @@ def search_folders(
         kw_lower = keyword.strip().lower() if keyword else ""
 
         if not recursive:
-            # 1단계 폴더만 초고속 스캔 (os.scandir 사용으로 최단 시간 응답)
             with os.scandir(abs_path) as entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):
@@ -49,7 +49,6 @@ def search_folders(
                         if len(folders) >= max_results:
                             break
         else:
-            # 하위 폴더 트리 탐색 (파일 순회는 전혀 하지 않음)
             scanned_dir_count = 0
             MAX_DIR_SCAN = 10000
 
@@ -106,18 +105,15 @@ def search_files(
     recursive: bool = False,
     max_results: int = 50
 ) -> dict:
-    """폴더 내의 항목을 조회하거나, 키워드/카테고리/용량/하위폴더 탐색 조건을 걸어 파일을 검색합니다."""
+    """폴더 내의 항목을 조회하거나 조건에 맞는 파일을 검색합니다."""
     try:
         clean_path = path.strip().strip("'\"")
-    
-        # "D:" 또는 "d:" 처럼 슬래시 없는 드라이브 문자가 들어온 경우 강제로 루트 경로로 보정
         if re.match(r"^[a-zA-Z]:$", clean_path):
             clean_path += "\\"
         elif re.match(r"^[a-zA-Z]:[\\/]+$", clean_path):
             clean_path = clean_path[:2] + "\\"
 
         abs_path = os.path.normpath(os.path.abspath(clean_path))
-                
         if not os.path.exists(abs_path):
             return {"success": False, "error": f"지정한 경로가 존재하지 않습니다: {abs_path}"}
 
@@ -135,11 +131,10 @@ def search_files(
                     continue
                 full_path = os.path.join(abs_path, item)
                 is_dir = os.path.isdir(full_path)
-                
+
                 if keyword and keyword.lower() not in item.lower():
                     continue
 
-                # 단순 폴더 조회일 때는 용량 검사 패스
                 matches.append({
                     "name": item,
                     "path": full_path,
@@ -149,46 +144,38 @@ def search_files(
                     break
         else:
             scanned_count = 0
-            MAX_SCANNED_LIMIT = 50000
-            
+            hit_scan_limit = False
+
             for root, dirs, files in os.walk(abs_path, topdown=True, onerror=None):
                 dirs[:] = [
                     d for d in dirs 
-                    if d.lower() not in EXCLUDE_DIRS and not d.startswith("$") and not d.startswith(".")
+                    if d.lower() not in EXCLUDE_DIRS and not d.startswith(("$", "."))
                 ]
 
                 for file in files:
                     scanned_count += 1
-                    
-                    if scanned_count >= MAX_SCANNED_LIMIT:
-                        print(f"[Scan Limit Reached] 최대 스캔 한도 {MAX_SCANNED_LIMIT}개에 도달했습니다.")
+                    if scanned_count >= MAX_SCAN_LIMIT:
+                        hit_scan_limit = True
                         dirs.clear()
                         break
-                    
+
                     ext = os.path.splitext(file)[1].lower()
                     if target_extensions and ext not in target_extensions:
                         continue
-
                     if keyword and keyword.lower() not in file.lower():
                         continue
 
                     full_path = os.path.join(root, file)
-                    
-                    size_mb = 0
                     need_stat = (min_size_mb > 0) or (max_size_mb > 0)
-                    
-                    # 파일의 크기를 확인해야 할 때만 검사
+
                     if need_stat:
                         try:
                             stat = os.stat(full_path)
                             size_mb = round(stat.st_size / (1024 * 1024), 2)
-
-                            # 용량 조건 필터링
                             if min_size_mb > 0 and size_mb < min_size_mb:
                                 continue
                             if max_size_mb > 0 and size_mb > max_size_mb:
                                 continue
-
                         except (PermissionError, FileNotFoundError, OSError):
                             continue
                     else:
@@ -196,7 +183,7 @@ def search_files(
                             size_mb = round(os.path.getsize(full_path) / (1024 * 1024), 2)
                         except OSError:
                             size_mb = 0.0
-                    
+
                     matches.append({
                         "name": file,
                         "path": full_path,
@@ -208,31 +195,35 @@ def search_files(
                     if len(matches) >= max_results:
                         break
 
-                if len(matches) >= max_results or scanned_count >= MAX_SCANNED_LIMIT:
+                if len(matches) >= max_results or hit_scan_limit:
                     break
 
-        # 검색된 원본 전체를 디스크 캐시에 확실하게 기록
+        # 디스크 캐시 저장
         try:
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(matches, f, ensure_ascii=False)
         except Exception as e:
             print(f"[캐시 저장 실패]: {e}")
 
-        # LLM에게는 요약만 반환
         return {
             "success": True,
             "target_path": abs_path,
             "total_found": len(matches),
-            "hit_limit": len(matches) >= max_results,
-            "message": f"총 {len(matches)}개 파일이 검색되어 캐시에 보관되었습니다."
+            "scanned_files_count": scanned_count,
+            "hit_scan_limit": hit_scan_limit,  # 5만 개 한도 도달 여부
+            "hit_max_results": len(matches) >= max_results, # 50개 초과 여부
+            "message": (
+                f"최대 검사 한도({MAX_SCAN_LIMIT}개)에 도달하여 탐색이 중단되었습니다. "
+                if hit_scan_limit else f"총 {len(matches)}개 파일이 검색되어 캐시에 보관되었습니다."
+            )
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def export_search_results_to_file(dest_path: str = "search_result.txt", keyword: str = "") -> dict:
-    """최근 검색 결과 캐시에서 전체 또는 특정 키워드가 포함된 목록만 텍스트 파일로 저장합니다."""
+def export_search_results_to_file(dest_path: str = DEFAULT_EXPORT_FILENAME, keyword: str = "") -> dict:
+    """최근 검색 결과 캐시에서 목록을 추출하여 search_result 디렉터리에 안전하게 저장합니다."""
     if not os.path.exists(CACHE_FILE):
-        return {"success": False, "error": "저장할 최근 검색 결과가 없습니다. 먼저 검색을 실행해 주세요."}
+        return {"success": False, "error": "저장할 최근 검색 결과가 없습니다. 먼저 파일 검색을 실행해 주세요."}
 
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -241,7 +232,6 @@ def export_search_results_to_file(dest_path: str = "search_result.txt", keyword:
         if not cached_results:
             return {"success": False, "error": "저장할 최근 검색 결과가 비어 있습니다."}
 
-        # 키워드가 들어온 경우 캐시 내에서 2차 필터링
         if keyword.strip():
             clean_kw = keyword.strip().lower()
             target_list = [item for item in cached_results if clean_kw in item["name"].lower()]
@@ -251,8 +241,14 @@ def export_search_results_to_file(dest_path: str = "search_result.txt", keyword:
         if not target_list:
             return {"success": False, "error": f"검색 결과 중 '{keyword}'(이)가 포함된 파일이 없습니다."}
 
-        abs_dest = os.path.normpath(os.path.abspath(dest_path))
-        safe_path = get_unique_filepath(abs_dest)
+        # 경로 탈출 방지: 파일명만 추출하여 EXPORT_DIR로 귀속
+        raw_name = dest_path.strip() if dest_path and dest_path.strip() else DEFAULT_EXPORT_FILENAME
+        safe_filename = os.path.basename(raw_name)
+        if not os.path.splitext(safe_filename)[1]:
+            safe_filename += ".txt"
+
+        target_abs_path = os.path.join(EXPORT_DIR, safe_filename)
+        safe_path = get_unique_filepath(target_abs_path)
 
         title_kw = f" [필터: '{keyword}']" if keyword.strip() else ""
         lines = [f"=== 검색 결과 목록{title_kw} (총 {len(target_list)}개) ===\n"]
@@ -265,7 +261,9 @@ def export_search_results_to_file(dest_path: str = "search_result.txt", keyword:
         return {
             "success": True,
             "saved_count": len(target_list),
-            "saved_path": safe_path
+            "saved_path": safe_path,
+            "filename": os.path.basename(safe_path),
+            "message": f"검색 결과 {len(target_list)}건이 '{os.path.basename(safe_path)}' 파일로 저장되었습니다."
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -273,7 +271,8 @@ def export_search_results_to_file(dest_path: str = "search_result.txt", keyword:
 def read_file(path: str) -> dict:
     """텍스트 파일의 내용을 읽어 반환합니다."""
     try:
-        abs_path = os.path.abspath(path)
+        clean_path = path.strip().strip("'\"")
+        abs_path = os.path.normpath(os.path.abspath(clean_path))
 
         if not os.path.exists(abs_path):
             return {"success": False, "error": f"파일을 찾을 수 없습니다: {abs_path}"}
@@ -289,7 +288,6 @@ def read_file(path: str) -> dict:
         if file_size > MAX_FILE_SIZE:
             return {"success": False, "error": f"파일 용량 초과 (최대 1MB, 현재: {file_size} bytes)"}
 
-        # 인코딩 문제 방지를 위해 utf-8 기본, 실패 시 cp949(EUC-KR) 시도
         try:
             with open(abs_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -309,22 +307,27 @@ def read_file(path: str) -> dict:
 def write_file(path: str, content: str, mode: str = "w") -> dict:
     """지정한 파일에 텍스트 내용을 저장하거나 덧붙입니다."""
     try:
-        abs_path = os.path.abspath(path)
+        clean_path = path.strip().strip("'\"")
+        abs_path = os.path.normpath(os.path.abspath(clean_path))
 
-        # 상위 디렉터리가 없으면 자동 생성
         parent_dir = os.path.dirname(abs_path)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
 
-        # 파일 쓰기 (w: 덮어쓰기/새로만들기, a: 이어쓰기)
+        is_overwrite = os.path.exists(abs_path) and mode != "append"
         write_mode = "a" if mode == "append" else "w"
+
         with open(abs_path, write_mode, encoding="utf-8") as f:
             f.write(content)
+
+        action_desc = "이어쓰기 완료" if write_mode == "a" else ("덮어쓰기 완료" if is_overwrite else "신규 생성 완료")
 
         return {
             "success": True,
             "path": abs_path,
-            "message": f"파일이 성공적으로 {'수정' if write_mode == 'a' else '생성/저장'}되었습니다."
+            "filename": os.path.basename(abs_path),
+            "action": action_desc,
+            "message": f"파일 {action_desc}: {abs_path}"
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -332,18 +335,19 @@ def write_file(path: str, content: str, mode: str = "w") -> dict:
 def delete_file(path: str) -> dict:
     """지정한 파일이나 폴더를 영구 삭제하지 않고 휴지통으로 안전하게 이동시킵니다."""
     try:
-        abs_path = os.path.abspath(path)
+        clean_path = path.strip().strip("'\"")
+        abs_path = os.path.normpath(os.path.abspath(clean_path))
 
         if not os.path.exists(abs_path):
-            return {"success": False, "error": f"파일을 찾을 수 없습니다: {abs_path}"}
+            return {"success": False, "error": f"항목을 찾을 수 없습니다: {abs_path}"}
 
-        # 휴지통으로 이동 (영구 삭제 방지)
         send2trash(abs_path)
 
         return {
             "success": True,
             "path": abs_path,
-            "message": "파일이 휴지통으로 안전하게 이동되었습니다. (영구 삭제는 휴지통에서 직접 진행해야 합니다.)"
+            "filename": os.path.basename(abs_path),
+            "message": f"휴지통으로 안전하게 이동되었습니다: {abs_path}"
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -351,15 +355,24 @@ def delete_file(path: str) -> dict:
 def move_file(source_path: str, dest_path: str) -> dict:
     """파일이나 폴더를 다른 경로로 이동하거나 이름을 변경합니다."""
     try:
-        abs_src = os.path.abspath(source_path)
-        abs_dst = os.path.abspath(dest_path)
+        abs_src = os.path.normpath(os.path.abspath(source_path.strip().strip("'\"")))
+        abs_dst = os.path.normpath(os.path.abspath(dest_path.strip().strip("'\"")))
+
+        if not os.path.exists(abs_src):
+            return {"success": False, "error": f"원본 경로가 존재하지 않습니다: {abs_src}"}
+
         shutil.move(abs_src, abs_dst)
-        return {"success": True, "message": f"{abs_src} -> {abs_dst} 이동 완료"}
+        return {
+            "success": True,
+            "source": abs_src,
+            "destination": abs_dst,
+            "message": f"이동 완료: {abs_src} -> {abs_dst}"
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 def check_in_last_search(keyword: str) -> dict:
-    """최근 검색된 파일 캐시(.search_cache.json) 내에서 특정 키워드가 포함된 항목이 있는지 확인합니다."""
+    """최근 검색된 파일 캐시 내에서 특정 키워드가 포함된 항목이 있는지 확인합니다."""
     if not os.path.exists(CACHE_FILE):
         return {"success": False, "error": "최근 검색 결과가 없습니다. 먼저 파일 검색을 실행해 주세요."}
 
@@ -370,7 +383,6 @@ def check_in_last_search(keyword: str) -> dict:
         if not cached_results:
             return {"success": False, "error": "최근 검색 결과가 비어 있습니다."}
 
-        # 대소문자 구분 없이 키워드 매칭
         clean_kw = keyword.strip().lower()
         matched = [
             {"name": item["name"], "size_mb": item.get("size_mb", 0), "path": item["path"]}
@@ -383,33 +395,24 @@ def check_in_last_search(keyword: str) -> dict:
             "keyword": keyword,
             "found": len(matched) > 0,
             "total_matched": len(matched),
-            "matches": matched[:5]  # LLM 컨텍스트 보호를 위해 최대 5개까지만 노출
+            "matches": matched[:5]
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# 도구 정의 리스트 (각 도구를 별도 딕셔너리로 분리)
+# 도구 정의 리스트 (LLM 스키마 동기화)
 FILES_SCHEMAS = [
     {
         "type": "function",
         "function": {
             "name": "search_folders",
-            "description": "지정한 경로의 하위 폴더(디렉터리) 목록만 빠르게 확인하거나 특정 이름을 가진 폴더를 찾습니다. 파일은 검색하지 않으며 폴더 트리 파악에 매우 빠릅니다.",
+            "description": "지정한 경로의 하위 폴더 목록만 빠르게 조회하거나 폴더를 검색합니다. 파일은 검색하지 않아 매우 빠릅니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "조회할 기준 폴더 경로 (예: 'D:\\' 또는 '.')"
-                    },
-                    "keyword": {
-                        "type": "string",
-                        "description": "찾으려는 폴더명 키워드 (전체 1단계 폴더 목록을 볼 때는 비워둠)"
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "하위 폴더 깊숙이 찾을지 여부. 단순히 최상위 폴더 목록만 볼 때는 false"
-                    }
+                    "path": {"type": "string", "description": "조회할 기준 폴더 절대 경로 (예: 'D:\\' 또는 '.')"},
+                    "keyword": {"type": "string", "description": "찾으려는 폴더명 키워드"},
+                    "recursive": {"type": "boolean", "description": "하위 폴더 깊숙이 찾을지 여부"}
                 },
                 "required": ["path"]
             }
@@ -419,35 +422,20 @@ FILES_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_files",
-            "description": "폴더 내의 파일/폴더 목록을 조회하거나, 키워드·카테고리·용량(MB)·하위폴더(재귀) 조건으로 파일을 검색합니다.",
+            "description": "폴더 내 항목 조회 또는 키워드·카테고리·용량(MB)·하위폴더 조건으로 파일을 검색합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "조회 또는 검색할 기준 폴더 경로 (기본값: '.')"
-                    },
-                    "keyword": {
-                        "type": "string",
-                        "description": "파일명이나 폴더명에 포함될 검색어 (단순 목록 조회 시 비워둠)"
-                    },
+                    "path": {"type": "string", "description": "조회 또는 검색할 기준 폴더 절대 경로"},
+                    "keyword": {"type": "string", "description": "파일명 또는 폴더명 검색어"},
                     "category": {
                         "type": "string",
                         "enum": ["video", "audio", "image", "document"],
-                        "description": "파일 종류 필터 (동영상 요청 시 'video', 문서 요청 시 'document' 지정)"
+                        "description": "파일 종류 필터"
                     },
-                    "min_size_mb": {
-                        "type": "number",
-                        "description": "최소 파일 크기 단위: MB (예: 1GB 이상이면 1024)"
-                    },
-                    "max_size_mb": {
-                        "type": "number",
-                        "description": "최대 파일 크기 단위: MB (예: 2GB 이하이면 2048)"
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "하위 폴더까지 깊숙이 뒤질지 여부 (기본값: false)"
-                    }
+                    "min_size_mb": {"type": "number", "description": "최소 파일 크기 (MB 단위)"},
+                    "max_size_mb": {"type": "number", "description": "최대 파일 크기 (MB 단위)"},
+                    "recursive": {"type": "boolean", "description": "하위 폴더 재귀 검색 여부"}
                 },
                 "required": ["path"]
             }
@@ -457,20 +445,20 @@ FILES_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "export_search_results_to_file",
-            "description": "최근 검색된 파일 목록을 텍스트 파일(.txt)로 저장합니다. 전체를 저장하거나, 특정 단어가 포함된 것만 골라서 저장할 수 있습니다.",
+            "description": "최근 검색된 파일 목록을 프로젝트 루트의 search_result 폴더 아래 텍스트 파일(.txt)로 저장합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "dest_path": {
                         "type": "string",
-                        "description": "저장할 파일 경로 (예: 'F:\\search_result.txt')"
+                        "description": "저장할 파일명 (생략 시 'search_result.txt'로 자동 지정되며 무조건 search_result 디렉터리에 저장됨)"
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "특정 단어가 포함된 항목만 필터링하여 저장하려는 경우 지정 (기본값: 전체 저장)"
+                        "description": "특정 단어가 포함된 항목만 필터링하여 저장하려는 경우 지정"
                     }
                 },
-                "required": ["dest_path"]
+                "required": []
             }
         }
     },
@@ -482,10 +470,7 @@ FILES_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "읽을 텍스트 파일의 상대 또는 절대 경로"
-                    }
+                    "path": {"type": "string", "description": "읽을 텍스트 파일의 절대 경로"}
                 },
                 "required": ["path"]
             }
@@ -495,18 +480,13 @@ FILES_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "지정한 경로에 텍스트나 소스 코드 내용을 새로 작성하거나 저장합니다.",
+            "description": "지정한 경로에 텍스트나 소스 코드를 새로 작성하거나 저장합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "작성하거나 저장할 파일의 상대 또는 절대 경로 (예: 'calc.py')"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "파일에 들어갈 전체 코드 또는 텍스트 내용"
-                    }
+                    "path": {"type": "string", "description": "작성할 파일의 절대 경로"},
+                    "content": {"type": "string", "description": "파일에 들어갈 전체 텍스트 내용"},
+                    "mode": {"type": "string", "enum": ["w", "append"], "description": "새로쓰기('w') 또는 이어쓰기('append')"}
                 },
                 "required": ["path", "content"]
             }
@@ -516,14 +496,11 @@ FILES_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "delete_file",
-            "description": "지정한 파일을 영구 삭제하지 않고 휴지통으로 안전하게 이동합니다. 사용자가 삭제를 요구할 때 사용합니다.",
+            "description": "지정한 파일이나 폴더를 영구 삭제하지 않고 휴지통으로 안전하게 이동합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "휴지통으로 보낼 파일의 경로"
-                    }
+                    "path": {"type": "string", "description": "휴지통으로 보낼 파일 또는 폴더의 절대 경로"}
                 },
                 "required": ["path"]
             }
@@ -537,14 +514,8 @@ FILES_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_path": {
-                        "type": "string",
-                        "description": "이동하거나 이름을 바꿀 원본 파일/폴더 경로"
-                    },
-                    "dest_path": {
-                        "type": "string",
-                        "description": "이동할 대상 경로 또는 변경할 새 파일/폴더 경로"
-                    }
+                    "source_path": {"type": "string", "description": "원본 파일/폴더 절대 경로"},
+                    "dest_path": {"type": "string", "description": "대상 절대 경로"}
                 },
                 "required": ["source_path", "dest_path"]
             }
@@ -554,14 +525,11 @@ FILES_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "check_in_last_search",
-            "description": "최근 검색된 파일 결과 목록 내에서 사용자가 언급한 특정 단어나 파일명이 포함되어 있는지 빠르게 확인합니다. 사용자가 '그중에 ~ 파일 있어?'라고 물을 때 호출합니다.",
+            "description": "최근 검색된 캐시 목록 내에서 사용자가 언급한 특정 단어나 파일명이 있는지 확인합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "keyword": {
-                        "type": "string",
-                        "description": "찾으려는 파일명이나 키워드 (예: '어벤져스', '키코드')"
-                    }
+                    "keyword": {"type": "string", "description": "확인할 파일명이나 키워드"}
                 },
                 "required": ["keyword"]
             }

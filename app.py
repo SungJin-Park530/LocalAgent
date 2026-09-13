@@ -264,12 +264,16 @@ if user_input:
         full_response = ""
 
         try:
+            # 컨텍스트 객체 확보 (키가 없을 경우 빈 딕셔너리로 초기화)
+            room_context = active_room.setdefault("context", {})
+
             generator = run_agent_engine(
                 user_message=user_input,
                 history=active_room["messages"][:-1],
                 prompt_files=active_room["prompt_files"],
                 tools=active_room["tools"],
-                profile_key=selected_model_key
+                profile_key=selected_model_key,
+                room_context=room_context  # <-- context 전달
             )
 
             for event in generator:

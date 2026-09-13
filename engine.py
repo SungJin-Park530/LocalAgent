@@ -4,7 +4,7 @@ import json
 import re
 import ollama
 from tools import ALL_SCHEMAS, execute_tool
-from config.settings import MODEL_PROFILES
+from config.settings import MODEL_PROFILES, PROMPTS_DIR
 
 def clean_model_output(text: str) -> str:
     if not text:
@@ -16,12 +16,9 @@ def clean_model_output(text: str) -> str:
     
     target_text = cleaned if cleaned else re.sub(r"</?think>", "", text).strip()
     
-    # 2. 동일/유사 문단 자가 반복 방어
-    # 빈 줄 기준으로 문단 분리 후, 모델이 혼자서 가상 턴을 진행한 경우 첫 답변 영역 추출
+    # 2. 동일/유사 문단 자가 반복 및 가상 롤 방어
     paragraphs = [p.strip() for p in target_text.split("\n\n") if p.strip()]
     if len(paragraphs) >= 2:
-        # 모델이 "User:" 등을 가상으로 생성하며 혼자 북치고 장구친 경우 차단
-        first_p = paragraphs[0]
         for fake_role in ["User:", "Human:", "사용자:", "Assistant:"]:
             if fake_role in target_text:
                 target_text = target_text.split(fake_role)[0].strip()
@@ -29,30 +26,68 @@ def clean_model_output(text: str) -> str:
 
     return target_text
 
-def build_system_prompt(selected_files: list[str], prompts_dir: str = "prompts") -> str:
-    """주어진 프롬프트 파일 목록을 읽어 하나의 시스템 프롬프트로 결합합니다."""
+def build_system_prompt(selected_files: list[str], room_context: dict = None) -> str:
+    """프롬프트 파일들을 결합하고 세션 컨텍스트(메모리)를 하단에 동적 주입합니다."""
     combined = []
     for file_name in selected_files:
-        path = os.path.join(prompts_dir, file_name)
+        path = os.path.join(PROMPTS_DIR, file_name)
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if content:
                     combined.append(content)
-    return "\n\n---\n\n".join(combined)
+    
+    full_prompt = "\n\n---\n\n".join(combined)
+
+    # [동적 컨텍스트 주입] 세션 메모리 상태가 있으면 프롬프트 끝머리에 부착
+    if room_context:
+        state_parts = []
+        if room_context.get("cwd"):
+            state_parts.append(f"기준 경로: {room_context['cwd']}")
+        if room_context.get("last_keyword"):
+            state_parts.append(f"직전 검색어: {room_context['last_keyword']}")
+        if room_context.get("last_exported"):
+            state_parts.append(f"최근 저장 파일: {room_context['last_exported']}")
+
+        if state_parts:
+            status_banner = "\n\n---\n\n[현재 작업 상태 | " + " | ".join(state_parts) + "]"
+            full_prompt += status_banner
+
+    return full_prompt
+
+def _update_context_from_result(room_context: dict, func_name: str, args: dict, result: dict):
+    """도구 실행 결과로 room_context 상태를 갱신하는 헬퍼 함수"""
+    if not room_context or not isinstance(result, dict) or not result.get("success"):
+        return
+
+    # 1. 디렉터리/파일 탐색 성공 시 기준 작업 디렉터리(cwd) 동기화
+    if func_name in ("search_folders", "search_files"):
+        target_path = result.get("target_path")
+        if target_path:
+            room_context["cwd"] = target_path
+        if args.get("keyword"):
+            room_context["last_keyword"] = args.get("keyword")
+
+    # 2. 파일 내보내기 성공 시 파일 정보 기록
+    elif func_name == "export_search_results_to_file":
+        saved_path = result.get("saved_path")
+        if saved_path:
+            room_context["last_exported"] = saved_path
 
 def run_agent_engine(
     user_message: str,
     history: list,
     prompt_files: list[str],
     tools: list[dict] | None,
-    profile_key: str
+    profile_key: str,
+    room_context: dict = None  # 세션 메모리 수신
 ):
     profile = MODEL_PROFILES[profile_key]
     model_name = profile["name"]
     options = profile.get("options", {})
 
-    system_prompt = build_system_prompt(prompt_files)
+    # 시스템 프롬프트 조립 (context 동적 반영)
+    system_prompt = build_system_prompt(prompt_files, room_context)
 
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
@@ -77,7 +112,7 @@ def run_agent_engine(
 
         # 1) 정식 tool_calls 처리
         if message.get("tool_calls"):
-            just_exported_file = None
+            just_exported_basename = None
             executed_calls = set()
 
             for tool_call in message["tool_calls"]:
@@ -85,8 +120,11 @@ def run_agent_engine(
                 raw_args = tool_call["function"]["arguments"]
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
 
-                if func_name == "write_file" and just_exported_file and args.get("path") == just_exported_file:
-                    continue
+                # 방금 내보낸 파일에 대해 write_file로 즉시 덮어쓰는 사고 방지 (파일명 기준 비교)
+                if func_name == "write_file" and just_exported_basename:
+                    req_path = args.get("path", "")
+                    if os.path.basename(req_path) == just_exported_basename:
+                        continue
 
                 call_signature = f"{func_name}_{json.dumps(args, sort_keys=True)}"
                 if call_signature in executed_calls:
@@ -96,8 +134,12 @@ def run_agent_engine(
                 yield {"type": "tool_start", "name": func_name, "args": args}
                 tool_result = execute_tool(func_name, args)
 
+                # 컨텍스트 메모리 갱신
+                _update_context_from_result(room_context, func_name, args, tool_result)
+
                 if func_name == "export_search_results_to_file" and tool_result.get("success"):
-                    just_exported_file = args.get("dest_path")
+                    saved_path = tool_result.get("saved_path", "")
+                    just_exported_basename = os.path.basename(saved_path)
 
                 yield {"type": "tool_end", "name": func_name, "result": tool_result}
 
@@ -107,7 +149,7 @@ def run_agent_engine(
                 })
             continue
 
-        # 2) 텍스트 본문 추출 및 정제 (구출 로직 반영)
+        # 2) 텍스트 본문 추출 및 정제
         raw_content = message.get("content", "")
         content_text = clean_model_output(raw_content)
 
@@ -121,6 +163,7 @@ def run_agent_engine(
                 if func_name:
                     yield {"type": "tool_start", "name": func_name, "args": args}
                     tool_result = execute_tool(func_name, args)
+                    _update_context_from_result(room_context, func_name, args, tool_result)
                     yield {"type": "tool_end", "name": func_name, "result": tool_result}
 
                     messages.append({
@@ -131,7 +174,7 @@ def run_agent_engine(
             except json.JSONDecodeError:
                 pass
 
-        # 4) 빈 본문 방어 (기존 방식 유지하되 명확히 처리)
+        # 4) 빈 본문 방어
         if not content_text:
             retry_count += 1
             if retry_count > MAX_RETRIES:
@@ -145,13 +188,12 @@ def run_agent_engine(
                 })
                 continue
             else:
-                # 첫 턴에 생각만 뱉고 본문을 안 썼을 때 정상적으로 답변을 유도
                 messages.append({
                     "role": "user",
                     "content": "생각을 마쳤으면 네 말투 그대로 이어서 자연스럽게 답변해줘."
                 })
                 continue
 
-        # 유효한 본문이 나왔을 때만 단 1회 yield 하고 루프 탈출
+        # 유효한 본문이 나왔을 때 단 1회 yield 하고 루프 탈출
         yield {"type": "text", "content": content_text}
         break

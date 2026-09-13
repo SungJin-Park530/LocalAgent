@@ -82,6 +82,14 @@ def get_available_prompts(prompts_dir: str = PROMPTS_DIR) -> list[dict]:
         
     return prompt_list
 
+def get_default_room_context() -> dict:
+    """새로운 대화방을 위한 기본 세션 컨텍스트 구조 반환"""
+    return {
+        "cwd": None,             # 현재 작업/기준 디렉터리 경로
+        "last_keyword": "",      # 직전 검색 키워드
+        "last_exported": None    # 가장 최근 내보낸 파일 절대 경로
+    }
+
 def get_default_rooms() -> dict:
     """
     초기 실행 시 세션에 채워둘 기본 방 템플릿입니다.
@@ -91,12 +99,14 @@ def get_default_rooms() -> dict:
             "name": "💬 기본 잡담방",
             "prompt_files": ["01_persona.md", "02_chat.md"],
             "tools": [CHAT_SCHEMAS[0]],
-            "messages": []
+            "messages": [],
+            "context": get_default_room_context()
         },
         "room_agent": {
             "name": "🛠️ 파일 작업방",
-            "prompt_files": ["01_persona.md", "03_files.md"],
+            "prompt_files": ["01_persona.md", "03_files.md", "04_agent_workflow.md"],
             "tools": ALL_SCHEMAS,
-            "messages": []
+            "messages": [],
+            "context": get_default_room_context()
         }
     }
