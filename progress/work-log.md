@@ -93,3 +93,15 @@
 | **도구 안정성 (`tools/files.py`)** | 파일 내보내기 경로 격리 및 스키마 보정 | `export_search_results_to_file`의 저장 경로를 프로젝트 루트의 `search_result` 폴더로 강제 귀속하고, `FILES_SCHEMAS`의 `dest_path` 필수 제약을 해제하여 안전성 확보 |
 | **프롬프트 모듈화 (`prompts/`)** | 도구 스펙과 제어 워크플로우 분리 | `03_files.md`는 순수 도구 API 스펙으로 경량화하고, `04_agent_workflow.md`를 신설하여 탐색 전략(ToT), 종료 조건, UX 보고 규칙을 전담하도록 관심사 분리 |
 | **세션 메모리 구현 (`engine.py`, `app.py`, `room_manager.py`)** | 세션별 `context` 구조 구축 및 동적 주입 | 방 객체에 `cwd`, `last_keyword` 슬롯을 추가하고 도구 실행 시 경로를 자동 갱신한 뒤, 매 추론 전 시스템 프롬프트에 현재 작업 상태를 동적 주입하여 지칭 대명사 탐색 지원 |
+
+## 2026-09-15
+
+### 작업 결과
+
+| 구분 | 작업 내용 | 상세 설명 |
+| :--- | :--- | :--- |
+| **도구 구현** | 크롬 방문 기록 조회 도구 신설 (`tools/browser.py`) | 로컬 SQLite 기반 Chrome `History` 파일 복제 및 조회 로직 구현. 키워드, 기간(`days`), 건수(`limit`) 필터링을 지원하고 LLM이 읽기 쉬운 압축 텍스트로 반환하도록 포매팅 적용 |
+| **모듈 등록** | 브라우저 도구 스키마 및 디스패처 연동 | `BROWSER_SCHEMAS` 정의 및 `tools/__init__.py` 등록을 통해 기존 파일 제어 도구들과 함께 단일 모델 컨텍스트에서 정상 호출되도록 구성 |
+| **리팩토링** | `engine.py` 모듈화 및 서브루틴 분리 | 단일 책임 원칙(SRP)에 맞춰 폴백 JSON 파싱(`_parse_fallback_tool_call`), 빈 응답 제어(`_handle_empty_response`), 결과 직렬화(`_serialize_tool_result`)를 헬퍼 함수로 추출하여 메인 루프 가독성 개선 |
+| **의존성** | 랭그래프 마이그레이션 패키지 추가 | `requirements.txt`에 `langgraph`, `langchain-core`, `langchain-ollama`, `langgraph-checkpoint-sqlite` 추가 및 환경 설치 완료 |
+| **아키텍처 검증** | 랭그래프 최소 단위 파이프라인 검증 (`test_graph.py`) | `StateGraph`, 노드(`chatbot`, `summarizer`), 조건부 엣지(`should_summarize`)를 연결하여 메시지 수 기반 분기 동작 및 대화 요약 갱신 파이프라인 검증 |

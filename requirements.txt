@@ -1,3 +1,12 @@
-ollama
-Send2Trash
+# UI 및 기반 패키지
 streamlit
+ollama
+send2trash
+
+# 랭그래프 및 랭체인 코어
+langgraph
+langchain-core
+langchain-ollama
+
+# 대화 세션 영속화 (SQLite 체크포인터)
+langgraph-checkpoint-sqlite
