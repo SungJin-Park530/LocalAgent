@@ -5,7 +5,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-로컬 하드웨어(VRAM) 제약 환경에서 데이터 외부 유출 없이 로컬 PC 파일 시스템 제어 및 일상 작업을 자율 수행하는 **온프레미스(On-Premise) 소형 언어 모델(SLM) 기반 AI 에이전트 시스템**입니다.
+로컬 하드웨어(VRAM) 제약 환경에서 데이터 외부 유출 없이 로컬 PC 파일 시스템 제어 및 일상 작업을 자율 수행하는 **온프레미스(On-Premise) sLLM 기반 AI 에이전트 시스템**입니다.
 
 상용 클라우드 LLM API의 토큰 과금과 사내 민감 데이터 유출 리스크를 해소하기 위해 기획되었으며, 순수 Python 기반의 경량 에이전트 런타임과 도구 바인딩(Tool Binding), 계층적 탐색(Tree-of-Thought) 추론 체계를 구현했습니다.
 

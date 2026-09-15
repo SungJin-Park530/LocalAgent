@@ -2,19 +2,23 @@
 
 from .files import FILES_SCHEMAS
 from .chat_utils import CHAT_SCHEMAS
+from .browser import BROWSER_SCHEMAS
 from . import files as files_module
 from . import chat_utils
+from . import browser as browser_module
 
-# 나중에 os_control, web 모듈이 추가되면 여기에 리스트만 더해주면 됩니다.
+# 나중에 모듈이 추가되면 여기에 리스트만 더해주면 됩니다.
 ALL_SCHEMAS = [
     *FILES_SCHEMAS,
     *CHAT_SCHEMAS,
+    *BROWSER_SCHEMAS,
 ]
 
 # 도구 함수를 검색할 모듈 등록
 TOOL_MODULES = [
     files_module,
     chat_utils,
+    browser_module,
 ]
 
 def execute_tool(func_name: str, args: dict) -> dict:
