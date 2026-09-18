@@ -105,3 +105,15 @@
 | **리팩토링** | `engine.py` 모듈화 및 서브루틴 분리 | 단일 책임 원칙(SRP)에 맞춰 폴백 JSON 파싱(`_parse_fallback_tool_call`), 빈 응답 제어(`_handle_empty_response`), 결과 직렬화(`_serialize_tool_result`)를 헬퍼 함수로 추출하여 메인 루프 가독성 개선 |
 | **의존성** | 랭그래프 마이그레이션 패키지 추가 | `requirements.txt`에 `langgraph`, `langchain-core`, `langchain-ollama`, `langgraph-checkpoint-sqlite` 추가 및 환경 설치 완료 |
 | **아키텍처 검증** | 랭그래프 최소 단위 파이프라인 검증 (`test_graph.py`) | `StateGraph`, 노드(`chatbot`, `summarizer`), 조건부 엣지(`should_summarize`)를 연결하여 메시지 수 기반 분기 동작 및 대화 요약 갱신 파이프라인 검증 |
+
+## 2026-09-18
+
+### 작업 결과
+
+| 구분 | 작업 내용 | 상세 설명 |
+| :--- | :--- | :--- |
+| **도구 루프 검증** | 랭체인 `@tool` 및 `ToolNode` 연동 테스트 | 기존 `search_browser_history` 함수를 `@tool`로 래핑하고 `ToolNode`와 `tools_condition`을 활용하여 [에이전트 $\rightarrow$ 도구 실행 $\rightarrow$ 에이전트 브리핑] 순환 루프 정상 검증 |
+| **아키텍처 분기** | 듀얼 모델 기반 라우터 및 스키마 격리 구현 | `qwen2.5:1.5b`를 라우터에 배치하여 의도 분류 속도를 0.3초대로 단축하고, 도구가 없는 `chat_node`와 브라우저 도구 전용 `browser_agent_node`로 역할을 분리 |
+| **상태 영속화** | `SqliteSaver` 기반 세션 체크포인터 연동 | `chat_checkpoints.db`를 연결하고 `thread_id` 기반으로 외부 변수 누적 없이 대화 기록과 장부 상태가 자동 저장·복원되도록 구성 |
+| **컨텍스트 최적화** | 1.5B 모델 기반 자동 대화 요약 노드 결합 | 누적 메시지가 기준치를 초과할 때 1.5B 모델이 이전 대화를 압축하고 `RemoveMessage`로 오래된 메시지를 장부에서 제거하는 압축 파이프라인 검증 (처리 시간 약 0.36초) |
+| **디버깅 툴링** | 인터랙티브 CLI 루프 및 `/state` 상태 조회 기능 추가 | 파일 시스템을 직접 열어보지 않고도 런타임에서 현재 세션의 메시지 수와 압축된 요약본(`summary`)을 즉시 조회할 수 있는 콘솔 명령어 구현 |
