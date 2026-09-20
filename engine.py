@@ -1,242 +1,349 @@
-# 스트림릿 연결 엔진 모듈
 import os
+import sqlite3
+import time
 import json
-import re
-import ollama
-from typing import Any, Dict, List, Optional, Set, Tuple, Generator
-from tools import ALL_SCHEMAS, execute_tool
-from config.settings import MODEL_PROFILES, PROMPTS_DIR
+from typing import Annotated, Generator, Literal, TypedDict
+
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.tools import tool
+from langchain_ollama import ChatOllama
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+
+# ---------------------------------------------------------
+# 1. 설정 및 저장소 경로 초기화
+# ---------------------------------------------------------
+from config.settings import (
+    BASE_DIR,
+    DEFAULT_PROFILE,
+    MODEL_PROFILES,
+    DEFAULT_SUB_MODEL,
+    PROMPTS_DIR,
+)
+from tools.browser import search_browser_history as raw_search_browser_history
+from tools.chat_utils import (
+    get_current_time as raw_get_current_time,
+)
+from tools.chat_utils import (
+    get_current_weather as raw_get_current_weather,
+)
+
+# data 폴더 하위에 체크포인트 DB 격리
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+CHECKPOINT_DB_PATH = os.path.join(DATA_DIR, "chat_checkpoints.db")
 
 
-# ---------------------------------------------------------------------------
-# 1. 텍스트 정제 및 프롬프트 조립 헬퍼
-# ---------------------------------------------------------------------------
-
-def clean_model_output(text: str) -> str:
-    """<think> 태그 제거 및 환각성 롤(User:, Human:) 자가 반복 차단"""
-    if not text:
-        return ""
-    
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    cleaned = re.sub(r"</?think>", "", cleaned).strip()
-    target_text = cleaned if cleaned else re.sub(r"</?think>", "", text).strip()
-    
-    paragraphs = [p.strip() for p in target_text.split("\n\n") if p.strip()]
-    if len(paragraphs) >= 2:
-        for fake_role in ["User:", "Human:", "사용자:", "Assistant:"]:
-            if fake_role in target_text:
-                target_text = target_text.split(fake_role)[0].strip()
-                break
-
-    return target_text
+# ---------------------------------------------------------
+# 2. 도구(Tools) 표준 래핑
+# ---------------------------------------------------------
+@tool
+def get_current_time() -> dict:
+    """현재 시스템의 날짜, 요일, 시간을 확인합니다."""
+    return raw_get_current_time()
 
 
-def build_system_prompt(selected_files: List[str], room_context: Optional[Dict] = None) -> str:
-    """프롬프트 파일들을 결합하고 세션 컨텍스트(메모리)를 하단에 동적 주입합니다."""
-    combined = []
-    for file_name in selected_files:
-        path = os.path.join(PROMPTS_DIR, file_name)
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    combined.append(content)
-    
-    full_prompt = "\n\n---\n\n".join(combined)
-
-    if room_context:
-        state_parts = []
-        if room_context.get("cwd"):
-            state_parts.append(f"기준 경로: {room_context['cwd']}")
-        if room_context.get("last_keyword"):
-            state_parts.append(f"직전 검색어: {room_context['last_keyword']}")
-        if room_context.get("last_exported"):
-            state_parts.append(f"최근 저장 파일: {room_context['last_exported']}")
-
-        if state_parts:
-            status_banner = "\n\n---\n\n[현재 작업 상태 | " + " | ".join(state_parts) + "]"
-            full_prompt += status_banner
-
-    return full_prompt
+@tool
+def get_current_weather(location: str = "Seoul") -> dict:
+    """현재 위치(기본 Seoul 또는 입력받은 도시)의 날씨와 기온을 조회합니다."""
+    return raw_get_current_weather(location=location)
 
 
-# ---------------------------------------------------------------------------
-# 2. 도구 실행 및 상태 갱신 서브 루틴
-# ---------------------------------------------------------------------------
-
-def _update_context_from_result(room_context: Optional[Dict], func_name: str, args: Dict, result: Any):
-    """도구 실행 결과로 room_context 상태를 갱신하는 헬퍼 함수"""
-    if not room_context or not isinstance(result, dict) or not result.get("success"):
-        return
-
-    # 1. 탐색 계열 성공 시 기준 작업 디렉터리(cwd) 동기화
-    if func_name in ("search_folders", "search_files"):
-        target_path = result.get("target_path")
-        if target_path:
-            room_context["cwd"] = target_path
-        if args.get("keyword"):
-            room_context["last_keyword"] = args.get("keyword")
-
-    # 2. 파일 내보내기 성공 시 파일 정보 기록
-    elif func_name == "export_search_results_to_file":
-        saved_path = result.get("saved_path")
-        if saved_path:
-            room_context["last_exported"] = saved_path
+@tool
+def search_browser_history(
+    keyword: str = "", days: int = 7, limit: int = 5
+) -> str:
+    """Chrome 브라우저 방문 기록을 조회합니다. 사용자가 들어간 웹사이트 내역이나 URL을 찾을 때 사용합니다."""
+    return raw_search_browser_history(keyword=keyword, days=days, limit=limit)
 
 
-def _serialize_tool_result(result: Any) -> str:
-    """도구 반환값(Dict 또는 문자열)을 LLM 메시지 주입용 문자열로 안전하게 변환"""
-    if isinstance(result, str):
-        return result
-    return json.dumps(result, ensure_ascii=False)
+# 기본 제공 도구 셋
+ALL_AVAILABLE_TOOLS = [
+    get_current_time,
+    get_current_weather,
+    search_browser_history,
+]
+TOOL_MAP = {t.name: t for t in ALL_AVAILABLE_TOOLS}
 
 
-def _parse_fallback_tool_call(content_text: str) -> Optional[Tuple[str, Dict]]:
-    """모델이 도구 스키마 대신 텍스트로 내뱉은 JSON 도구 호출을 파싱"""
-    if not (content_text.startswith("{") and content_text.endswith("}") and "name" in content_text):
-        return None
-    try:
-        data = json.loads(content_text)
-        func_name = data.get("name")
-        args = data.get("arguments", {})
-        if func_name:
-            return func_name, args
-    except json.JSONDecodeError:
-        pass
-    return None
+# ---------------------------------------------------------
+# 3. 모델 및 상태(State) 정의
+# ---------------------------------------------------------
+router_llm = ChatOllama(model=DEFAULT_SUB_MODEL, temperature=0.0)
+summarizer_llm = ChatOllama(
+    model=DEFAULT_SUB_MODEL, temperature=0.2, num_predict=300
+)
 
 
-def _handle_empty_response(retry_count: int, max_retries: int, has_tools: bool) -> Tuple[bool, str]:
-    """빈 응답 발생 시 재시도 가능 여부와 주입할 리트라이 프롬프트 반환"""
-    if retry_count >= max_retries:
-        return False, "(답변을 생성하지 못했습니다.)"
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    route: str
+    summary: str
+    active_tools: list  # 방별로 부여된 도구 이름 리스트
 
-    if has_tools:
-        retry_prompt = "방금 도구 실행 결과를 네 원래 말투와 캐릭터 성격 그대로 살려서 자연스럽게 보고해줘."
+
+# ---------------------------------------------------------
+# 4. 그래프 노드 정의
+# ---------------------------------------------------------
+def router_node(state: AgentState) -> dict:
+    """1.5B 경량 모델을 통한 초고속 의도 분류"""
+    last_user_msg = state["messages"][-1].content
+
+    prompt = [
+        SystemMessage(
+            content=(
+                "사용자의 요청 의도를 분류하세요.\n"
+                "- 현재 시간, 날짜 확인을 요구하면: 'time'\n"
+                "- 날씨, 기온 조회를 요구하면: 'weather'\n"
+                "- 크롬/인터넷 방문 기록, 사이트 조회를 요구하면: 'browser'\n"
+                "- 그 외의 일반 잡담, 질문, 프로그래밍, 생각 공유는: 'chat'\n\n"
+                "[예시]\n"
+                "Q: 지금 몇 시야? -> time\n"
+                "Q: 오늘 서울 날씨 어때? -> weather\n"
+                "Q: 최근 방문한 사이트 알려줘 -> browser\n"
+                "Q: 안녕, 반가워 -> chat\n\n"
+                "설명 없이 단어 하나('time', 'weather', 'browser', 'chat')만 출력하세요."
+            )
+        ),
+        HumanMessage(content=last_user_msg),
+    ]
+    decision = router_llm.invoke(prompt).content.strip().lower()
+
+    if "browser" in decision:
+        route = "browser"
+    elif "time" in decision:
+        route = "time"
+    elif "weather" in decision:
+        route = "weather"
     else:
-        retry_prompt = "생각을 마쳤으면 네 말투 그대로 이어서 자연스럽게 답변해줘."
+        route = "chat"
 
-    return True, retry_prompt
+    return {"route": route}
 
 
-# ---------------------------------------------------------------------------
-# 3. 메인 에이전트 엔진
-# ---------------------------------------------------------------------------
+def agent_node(
+    state: AgentState, main_llm: ChatOllama, active_tool_instances: list, system_prompt: str
+) -> dict:
+    route = state.get("route", "chat")
 
+    target_tools = []
+    if route != "chat":
+        for t in active_tool_instances:
+            if (
+                (route == "browser" and "browser" in t.name)
+                or (route == "time" and "time" in t.name)
+                or (route == "weather" and "weather" in t.name)
+            ):
+                target_tools.append(t)
+
+    llm_runner = main_llm.bind_tools(target_tools) if target_tools else main_llm
+
+    full_messages = [SystemMessage(content=system_prompt)] + state["messages"]
+    response = llm_runner.invoke(full_messages)
+
+    # ---------------------------------------------------------
+    # [방어 로직] 모델이 tool_calls 대신 텍스트로 JSON을 뱉었을 때 구제
+    # ---------------------------------------------------------
+    if not response.tool_calls and response.content.strip().startswith("{") and "name" in response.content:
+        try:
+            parsed = json.loads(response.content.strip())
+            if "name" in parsed:
+                # 랭체인 규격 tool_calls 딕셔너리로 강제 복원
+                response.tool_calls = [{
+                    "name": parsed["name"],
+                    "args": parsed.get("arguments", {}),
+                    "id": f"call_{int(time.time())}"
+                }]
+        except Exception:
+            pass  # 단순 일반 대화 JSON 형태일 경우 무시
+    # ---------------------------------------------------------
+
+    return {"messages": [response]}
+
+
+def summarize_node(state: AgentState) -> dict:
+    """오래된 컨텍스트 요약 및 메시지 제거 (1.5B 처리)"""
+    existing_summary = state.get("summary", "")
+    messages_to_summarize = state["messages"][:-2]
+
+    dialogue_lines = []
+    for msg in messages_to_summarize:
+        role = "사용자" if isinstance(msg, HumanMessage) else "어시스턴트"
+        dialogue_lines.append(f"{role}: {msg.content}")
+    dialogue_text = "\n".join(dialogue_lines)
+
+    prompt = [
+        HumanMessage(
+            content=(
+                f"기존 요약: {existing_summary if existing_summary else '없음'}\n\n"
+                f"[대화 내용]\n{dialogue_text}\n\n"
+                "위 대화의 핵심 맥락과 중요한 사실을 한국어 2~3문장으로 간결히 요약하세요."
+            )
+        )
+    ]
+    res = summarizer_llm.invoke(prompt)
+    new_summary = res.content.strip()
+
+    delete_actions = [
+        RemoveMessage(id=m.id)
+        for m in messages_to_summarize
+        if hasattr(m, "id") and m.id
+    ]
+    return {"summary": new_summary, "messages": delete_actions}
+
+
+def should_summarize(state: AgentState) -> Literal["summarize_node", "__end__"]:
+    # 턴 수 관리 (메시지 10개 초과 시 압축)
+    if len(state["messages"]) > 10:
+        return "summarize_node"
+    return END
+
+
+def check_tool_or_summary(
+    state: AgentState,
+) -> Literal["tools", "summarize_node", "__end__"]:
+    last_msg = state["messages"][-1]
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "tools"
+    return should_summarize(state)
+
+
+# ---------------------------------------------------------
+# 5. UI 호환 메인 러너 함수 (app.py 인터페이스 완벽 대응)
+# ---------------------------------------------------------
 def run_agent_engine(
     user_message: str,
-    history: List[Dict],
-    prompt_files: List[str],
-    tools: Optional[List[Dict]],
-    profile_key: str,
-    room_context: Optional[Dict] = None
-) -> Generator[Dict[str, Any], None, None]:
-    profile = MODEL_PROFILES[profile_key]
-    model_name = profile["name"]
-    options = profile.get("options", {})
+    history: list,
+    prompt_files: list,
+    tools: list,
+    profile_key: str = DEFAULT_PROFILE,
+    room_context: dict = None,
+) -> Generator[dict, None, None]:
+    """Streamlit UI의 run_agent_engine 호출을 랭그래프로 변환 실행하는 제너레이터"""
+    # 1. 모델 인스턴스 준비
+    profile = MODEL_PROFILES.get(profile_key, MODEL_PROFILES[DEFAULT_PROFILE])
+    model_name = profile.get("name")
+    opts = profile.get("options", {})
 
-    # 시스템 프롬프트 조립
-    system_prompt = build_system_prompt(prompt_files, room_context)
+    main_llm = ChatOllama(
+        model=model_name,
+        temperature=opts.get("temperature", 0.3),
+        num_predict=opts.get("num_predict", 1024),
+        num_ctx=opts.get("num_ctx", 16384),
+        repeat_penalty=1.15,  # 무한 반복 루프 억제
+        stop=["<|im_end|>", "<|endoftext|>", "### Human:", "사용자:"],  # 발산 강제 차단
+    )
+    
+    # 1.5 시스템 프롬프트 로더
+    # 추론 태그 제어 지침을 기본으로 깔고, 방에 지정된 프롬프트 파일 내용 병합
+    system_content = "You are a helpful AI assistant. Do not use <think> tags. Answer directly and concisely in Korean.\n\n"
+    if prompt_files:
+        for p_file in prompt_files:
+            file_path = os.path.join(PROMPTS_DIR, p_file)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    system_content += f.read() + "\n\n"
 
-    messages = [{"role": "system", "content": system_prompt}]
-    for h in history:
-        messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": user_message})
+    # 2. 방에 장착된 도구 인스턴스 필터링
+    allowed_names = [t.get("function", {}).get("name") for t in tools]
+    active_tools = [
+        TOOL_MAP[name] for name in allowed_names if name in TOOL_MAP
+    ]
 
-    retry_count = 0
-    MAX_RETRIES = 2
-    executed_signatures: Set[str] = set()
-    just_exported_basename: Optional[str] = None
+    # 3. 동적 그래프 빌드
+    builder = StateGraph(AgentState)
+    builder.add_node("router", router_node)
+    builder.add_node(
+        "agent",
+        lambda s: agent_node(
+            s, 
+            main_llm=main_llm, 
+            active_tool_instances=active_tools, 
+            system_prompt=system_content.strip()
+        ),
+    )
+    builder.add_node("tools", ToolNode(active_tools if active_tools else [get_current_time]))
+    builder.add_node("summarize_node", summarize_node)
+    
+    # 1) 시작 진입점(Entrypoint) 연결 -> 에러 해결 핵심
+    builder.add_edge(START, "router")
 
-    while True:
-        chat_kwargs = {
-            "model": model_name,
-            "messages": messages,
-            "options": options
-        }
-        if tools:
-            chat_kwargs["tools"] = tools
+    # 2) 라우터 -> 에이전트
+    builder.add_edge("router", "agent")
 
-        response = ollama.chat(**chat_kwargs)
-        message = response["message"]
-        messages.append(message)
+    # 3) 에이전트 완료 후 조건 분기 (도구 실행, 요약 노드, 종료)
+    builder.add_conditional_edges(
+        "agent",
+        check_tool_or_summary,
+        {
+            "tools": "tools",
+            "summarize_node": "summarize_node",
+            END: END
+        },
+    )
+    
+    # 4) 도구 실행 후 다시 에이전트로 반환
+    builder.add_edge("tools", "agent")
 
-        # ---------------------------------------------------------
-        # Case A: 정식 Tool Calls 감지 시
-        # ---------------------------------------------------------
-        if message.get("tool_calls"):
-            for tool_call in message["tool_calls"]:
-                func_name = tool_call["function"]["name"]
-                raw_args = tool_call["function"]["arguments"]
-                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    # 5) 요약 완료 후 최종 종료
+    builder.add_edge("summarize_node", END)
 
-                # 방금 내보낸 파일을 write_file로 즉시 덮어쓰는 사고 방지
-                if func_name == "write_file" and just_exported_basename:
-                    req_path = args.get("path", "")
-                    if os.path.basename(req_path) == just_exported_basename:
-                        continue
+    # 4. 체크포인터 연결 (thread_id = 방 ID)
+    # Streamlit 세션의 active_room_id 사용 (없을 시 room_default)
+    room_id = (
+        room_context.get("room_id", "room_default")
+        if room_context
+        else "room_default"
+    )
 
-                # 동일 턴 중복 호출 방지 서명
-                call_sig = f"{func_name}_{json.dumps(args, sort_keys=True)}"
-                if call_sig in executed_signatures:
-                    continue
-                executed_signatures.add(call_sig)
+    conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
+    memory = SqliteSaver(conn)
+    graph = builder.compile(checkpointer=memory)
 
-                # 도구 실행 및 이벤트 스트리밍
-                yield {"type": "tool_start", "name": func_name, "args": args}
-                tool_result = execute_tool(func_name, args)
+    config = {"configurable": {"thread_id": room_id}}
 
-                _update_context_from_result(room_context, func_name, args, tool_result)
+    # 시스템 프롬프트 및 사용자 메시지 조립
+    # (필요시 prompt_files 내용을 읽어 SystemMessage로 결합 가능)
+    input_messages = [HumanMessage(content=user_message)]
 
-                if func_name == "export_search_results_to_file" and isinstance(tool_result, dict) and tool_result.get("success"):
-                    saved_path = tool_result.get("saved_path", "")
-                    just_exported_basename = os.path.basename(saved_path)
+    try:
+        events = graph.stream(
+            {"messages": input_messages},
+            config=config,
+            stream_mode="updates"
+        )
 
-                yield {"type": "tool_end", "name": func_name, "result": tool_result}
+        for event in events:
+            # [디버깅 로그 추가] 실제 어떤 노드 이벤트가 들어오는지 콘솔에 출력
+            print(f"\n>>> [LangGraph Event 수신]: {event}")
 
-                # 문자열/Dict 구분 없이 안전하게 주입
-                messages.append({
-                    "role": "tool",
-                    "content": _serialize_tool_result(tool_result)
-                })
-            continue
+            # 1. agent 노드에서 발생한 이벤트 처리
+            if "agent" in event:
+                msg = event["agent"]["messages"][-1]
+                print(f">>> [Agent 노드 메시지 타입]: {type(msg)}, 내용: {msg.content}")
 
-        # ---------------------------------------------------------
-        # Case B: 텍스트 본문 추출 및 폴백 검사
-        # ---------------------------------------------------------
-        raw_content = message.get("content", "")
-        content_text = clean_model_output(raw_content)
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        yield {"type": "tool_start", "name": tc["name"]}
+                elif msg.content:
+                    yield {"type": "text", "content": msg.content}
 
-        # 텍스트로 도구를 부른 경우 (폴백)
-        fallback = _parse_fallback_tool_call(content_text)
-        if fallback:
-            func_name, args = fallback
-            yield {"type": "tool_start", "name": func_name, "args": args}
-            tool_result = execute_tool(func_name, args)
-            _update_context_from_result(room_context, func_name, args, tool_result)
-            yield {"type": "tool_end", "name": func_name, "result": tool_result}
+            # 2. tools 노드 처리
+            elif "tools" in event:
+                for tool_msg in event["tools"]["messages"]:
+                    yield {
+                        "type": "tool_end",
+                        "name": getattr(tool_msg, "name", "tool"),
+                        "result": tool_msg.content
+                    }
 
-            messages.append({
-                "role": "tool",
-                "content": _serialize_tool_result(tool_result)
-            })
-            continue
-
-        # ---------------------------------------------------------
-        # Case C: 빈 본문 방어 (Self-Correction Retry)
-        # ---------------------------------------------------------
-        if not content_text:
-            can_retry, prompt_or_msg = _handle_empty_response(retry_count, MAX_RETRIES, bool(tools))
-            if not can_retry:
-                yield {"type": "text", "content": prompt_or_msg}
-                break
-
-            retry_count += 1
-            messages.append({"role": "user", "content": prompt_or_msg})
-            continue
-
-        # ---------------------------------------------------------
-        # Case D: 최종 정상 답변 도출 완료
-        # ---------------------------------------------------------
-        yield {"type": "text", "content": content_text}
-        break
+    finally:
+        conn.close()

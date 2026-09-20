@@ -266,6 +266,7 @@ if user_input:
         try:
             # 컨텍스트 객체 확보 (키가 없을 경우 빈 딕셔너리로 초기화)
             room_context = active_room.setdefault("context", {})
+            room_context["room_id"] = st.session_state.active_room_id
 
             generator = run_agent_engine(
                 user_message=user_input,

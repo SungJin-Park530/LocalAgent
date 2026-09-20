@@ -34,3 +34,6 @@ dist/
 # etc
 legacy/
 search_result/
+
+# chat history
+data/
