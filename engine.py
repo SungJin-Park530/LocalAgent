@@ -97,22 +97,12 @@ def router_node(state: AgentState) -> dict:
     """1.5B 경량 모델을 통한 초고속 의도 분류"""
     last_user_msg = state["messages"][-1].content
 
+    router_prompt_path = os.path.join(PROMPTS_DIR, "00_router.md")
+    with open(router_prompt_path, "r", encoding="utf-8") as prompt_file:
+        router_prompt = prompt_file.read()
+
     prompt = [
-        SystemMessage(
-            content=(
-                "사용자의 요청 의도를 분류하세요.\n"
-                "- 현재 시간, 날짜 확인을 요구하면: 'time'\n"
-                "- 날씨, 기온 조회를 요구하면: 'weather'\n"
-                "- 크롬/인터넷 방문 기록, 사이트 조회를 요구하면: 'browser'\n"
-                "- 그 외의 일반 잡담, 질문, 프로그래밍, 생각 공유는: 'chat'\n\n"
-                "[예시]\n"
-                "Q: 지금 몇 시야? -> time\n"
-                "Q: 오늘 서울 날씨 어때? -> weather\n"
-                "Q: 최근 방문한 사이트 알려줘 -> browser\n"
-                "Q: 안녕, 반가워 -> chat\n\n"
-                "설명 없이 단어 하나('time', 'weather', 'browser', 'chat')만 출력하세요."
-            )
-        ),
+        SystemMessage(content=router_prompt),
         HumanMessage(content=last_user_msg),
     ]
     decision = router_llm.invoke(prompt).content.strip().lower()
@@ -146,8 +136,16 @@ def agent_node(
 
     llm_runner = main_llm.bind_tools(target_tools) if target_tools else main_llm
 
-    full_messages = [SystemMessage(content=system_prompt)] + state["messages"]
+    full_messages = (
+        [SystemMessage(content=system_prompt)] if system_prompt else []
+    ) + state["messages"]
     response = llm_runner.invoke(full_messages)
+
+    if not response.tool_calls and not response.content.strip():
+        retry_messages = full_messages + [
+            HumanMessage(content="최종 답변만 간결하게 작성하세요.")
+        ]
+        response = llm_runner.invoke(retry_messages)
 
     # ---------------------------------------------------------
     # [방어 로직] 모델이 tool_calls 대신 텍스트로 JSON을 뱉었을 때 구제
@@ -238,13 +236,13 @@ def run_agent_engine(
         temperature=opts.get("temperature", 0.3),
         num_predict=opts.get("num_predict", 1024),
         num_ctx=opts.get("num_ctx", 16384),
+        reasoning=opts.get("reasoning", False),
         repeat_penalty=1.15,  # 무한 반복 루프 억제
         stop=["<|im_end|>", "<|endoftext|>", "### Human:", "사용자:"],  # 발산 강제 차단
     )
     
     # 1.5 시스템 프롬프트 로더
-    # 추론 태그 제어 지침을 기본으로 깔고, 방에 지정된 프롬프트 파일 내용 병합
-    system_content = "You are a helpful AI assistant. Do not use <think> tags. Answer directly and concisely in Korean.\n\n"
+    system_content = ""
     if prompt_files:
         for p_file in prompt_files:
             file_path = os.path.join(PROMPTS_DIR, p_file)
