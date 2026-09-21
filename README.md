@@ -17,7 +17,7 @@
 - **하드웨어 제약 기반 모델 최적화**: VRAM 스왑 및 추론 지연을 방지하기 위해 체급 최적화(Qwen 14B ➔ 9B)를 단행하여 단일 GPU에서 쾌적한 턴어라운드 타임 확보
 - **컨텍스트 격리 캐싱 아키텍처**: 수천 개의 파일 검색 결과로 인한 컨텍스트 윈도우 오버플로우를 막기 위해 검색 원본은 로컬 파일에 격리하고, 에이전트에는 통계 메타데이터만 전달하는 파이프라인 구축
 - **환각 및 과잉 도구 호출 방어 (Over-tooling 방지)**: SLM 특유의 도구 호출 편향과 가짜 경로 생성(Hallucination)을 막기 위한 행동 동사 기반 스키마 노출 제어 및 안전 덮어쓰기 방어 로직 구현
-- **모듈화된 프롬프트 & 멀티 룸 관리**: 페르소나, 일반 대화, 파일 제어 프롬프트를 분리하고, 채팅방별 독립된 도구와 페르소나를 동적으로 장착하는 룸 관리 시스템 구축
+- **모듈화된 프롬프트 & 멀티 룸 관리**: 페르소나, 일반 대화, 파일 제어, 작업 흐름 프롬프트를 분리하고, 채팅방별 프롬프트와 도구 스키마를 선택하는 룸 관리 시스템 구축
 
 ---
 
@@ -33,19 +33,19 @@ flowchart TB
     end
 
     subgraph Core ["에이전트 코어 (Pure Python)"]
-        C[engine.py\n추론 및 멀티턴 루프 제어]
+        C[engine.py\nLangGraph 추론 그래프 및 멀티턴 제어]
         D[config/settings.py\n모델 프로필 및 런타임 옵션]
-        E[prompts/\n3단계 분할 프롬프트 모듈]
+        E[prompts/\n모듈형 프롬프트 및 라우터 지침]
     end
 
     subgraph Local_LLM ["로컬 서빙 (Ollama Engine)"]
-        F[(Qwen 2.5 / 3.5 SLM)]
+        F[(메인 모델 및 1.5B 라우터/요약 모델)]
     end
 
     subgraph Tools ["도구 실행 파이프라인"]
-        G[tools/__init__.py\n동적 디스패처]
-        H[tools/files.py\n디렉터리/파일/캐시 제어]
-        I[tools/chat_utils.py\n시간/날씨 유틸리티]
+        G[tools/\n도구 스키마 및 구현 모듈]
+        H[tools/files.py\n파일/폴더/캐시 제어]
+        I[chat_utils.py + browser.py\n시간/날씨/방문 기록 도구]
         J[(cache/search_cache.json\n대용량 검색 결과 격리)]
     end
 
@@ -60,29 +60,27 @@ flowchart TB
     H <--> J
 ```
 
+현재 Streamlit 경로는 LangGraph의 라우터와 요약 노드, 방별 SQLite 체크포인트를 사용하며 시간·날씨·브라우저 도구를 연결합니다. 파일 도구(`tools/files.py`)는 CLI와 기존 도구 스키마/디스패처에서 사용되고, Streamlit 엔진으로의 직접 통합은 진행 중입니다.
+
 ### 디렉토리 구조
 
 ```
 LocalAgent/
 ├── app.py                     # Streamlit 기반 웹 인터페이스 및 세션 관리
-├── engine.py                  # Ollama 연동 추론, 멀티턴 루프 및 응답 정제 엔진
+├── engine.py                  # LangGraph 기반 추론, 도구 루프 및 SQLite 체크포인트
 ├── room_manager.py            # 방(Room) 단위 프롬프트/도구 동적 장착 및 관리 모듈
 ├── agent.py                   # 터미널 기반 CLI 에이전트 런타임
+├── test_graph.py              # LangGraph 라우팅/요약 흐름 검증용 테스트
+├── test_ollama.py             # Ollama 연결 및 모델 동작 확인용 테스트
 ├── requirements.txt           # 프로젝트 의존성 목록
-├── cache/
-│   └── search_cache.json      # 대용량 검색 결과 격리용 로컬 캐시
-├── config/
-│   ├── categories.py          # 파일 확장자 및 카테고리 매핑 규칙
-│   ├── settings.py            # 모델 프로필, 파라미터, 런타임 환경 설정
-│   └── settings.py.example    # 설정 예시 템플릿
-├── prompts/                   # 3단계 모듈형 프롬프트
-│   ├── 01_persona.md          # 에이전트 정체성 및 말투
-│   ├── 02_chat.md             # 일상 대화 및 상호작용 규칙
-│   └── 03_files.md            # 파일 시스템 제어 및 계층 탐색(ToT) 규칙
-└── tools/                     # Function Calling 도구 패키지
-    ├── __init__.py            # 스키마 통합(`ALL_SCHEMAS`) 및 동적 디스패처
-    ├── files.py               # 파일/폴더 검색, 선별 저장, 휴지통 제어 도구
-    └── chat_utils.py          # 시간, 날씨 등 대화형 보조 도구
+├── cache/                     # 파일 검색 결과 캐시 저장소
+├── data/                      # 실행 시 체크포인트 DB가 생성되는 영역
+├── config/                    # 런타임 환경 설정 지정
+├── prompts/                   # 사용자가 선택적으로 장착하는 모듈형 프롬프트
+│   └── system/                # 애플리케이션 내부 전용 시스템 프롬프트
+├── tools/                     # 도구 스키마 및 구현 패키지
+├── progress/                  # 개발 작업 및 문제 해결 기록
+└── legacy/                    # 이전 프롬프트/도구 구현 보관
 ```
 
 ## ⚙️ 주요 기능
@@ -92,7 +90,7 @@ LocalAgent/
 - 데이터 안전 파이프라인: 파일 덮어쓰기 사고를 방지하기 위해 연속 쓰기 차단 및 파일명 자동 넘버링((1), (2)) 유틸리티 적용
 
 ### 2. 모듈형 방(Room) 관리 및 동적 툴 바인딩
-- 독립 세션 제어: 목적별로 방을 생성하고, 방마다 필요한 프롬프트와 도구 스키마(ALL_SCHEMAS, CHAT_SCHEMAS)를 독립 주입
+- 독립 세션 제어: 목적별로 방을 생성하고, 방마다 필요한 프롬프트와 도구 스키마(ALL_SCHEMAS, CHAT_SCHEMAS)를 선택해 관리
 - 채팅 전용 도구 셋 분리: 일상 잡담 방에서 모델의 억지 도구 호출을 막기 위해 파일 제어 권한을 배제하고 시간/날씨 등의 기본 유틸리티만 바인딩
 
 ### 3. 무중단 런타임 제어

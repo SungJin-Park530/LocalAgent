@@ -21,6 +21,7 @@ DEFAULT_EXPORT_PATH = os.path.join(EXPORT_DIR, "search_result.txt")
 
 # 프롬프트 디렉터리 경로
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
+SYSTEM_PROMPTS_DIR = os.path.join(PROMPTS_DIR, "system")
 
 # 모델 풀 설정
 AVAILABLE_MODELS = {

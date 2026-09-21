@@ -1,6 +1,6 @@
-# Local prompts (for example: 01_persona.md)
-prompts/[0-9][0-9]_*.md
-!prompts/*.md.example
+# Local prompts: ignore Markdown files at every depth, but keep examples trackable
+prompts/**/*.md
+!prompts/**/*.md.example
 
 # Virtual environments
 .venv/

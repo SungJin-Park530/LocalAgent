@@ -137,5 +137,6 @@
 | **모델 탐색** | Tool Calling 최적화 로컬 LLM 선정 | Ollama 표준 `tool_calls` 프로토콜을 안정적으로 해석/반환하는 Function Calling 특화 모델(예: Qwen 2.5 Instruct 정식 빌드, Llama 3.1 계열 등) 테스트 및 선정 |
 | **도구 연동** | `files.py` 파일 제어 도구 이식 | 500줄 규모의 파일 제어 함수군(탐색, 읽기, 쓰기 등)을 `@tool` 규격으로 래핑하고 라우터 노드 및 `active_tools` 바인딩에 추가 |
 | **아키텍처 개선** | 사전 요약(Pre-trimming) 파이프라인 적용 | 사후 요약 구조로 인한 컨텍스트 포화 및 응답 누락을 원천 차단하기 위해, 메인 모델 진입 전 1.5B 기반으로 컨텍스트를 선제 압축하는 노드 순서 재배치 |
-| **DB 수명주기** | 체크포인트 DB 동기화 삭제 로직 추가 | Streamlit UI에서 대화 비우기나 방 삭제를 수행할 때 `chat_checkpoints.db`의 `thread_id` 관련 레코드(`checkpoints`, `writes`)도 함께 삭제되도록 연동 |
+| **DB 수명주기** | 체크포인트 DB 동기화 삭제 로직 추가 | Streamlit UI에서 대화 비우기나 방 삭제를 수행할 때 `chat_checkpoints.db`의 `thread_id` 관련 레코드(`checkpoints`, `writes`)도 함께 삭제되도록 연동, 혹은 SQLite 연동 |
 | **도구 파서 보강** | JSON 텍스트 폴백(Fallback) 처리 검증 | 모델이 네이티브 `tool_calls` 대신 텍스트로 JSON 스키마를 출력할 경우를 대비한 방어 파서의 안정성 검증 |
+| **깊은 추론 모드** | <think> 태그 허용 및 컨텍스트 조절 | 모델의 심층 답변을 위해 기능 온오프 토글 적용 |
