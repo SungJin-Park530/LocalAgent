@@ -124,11 +124,11 @@
 
 | 구분 | 작업 내용 | 상세 설명 |
 | :--- | :--- | :--- |
-| **아키텍처 이식** | LangGraph 기반 `engine.py` 전면 교체 | 기존 순수 파이썬 루프 엔진을 `StateGraph`, `SqliteSaver` 기반 구조로 전환하고 Streamlit UI 이벤트 규격(`tool_start`, `tool_end`, `text`)을 맞춘 제너레이터 래퍼 구현[cite: 1] |
+| **아키텍처 이식** | LangGraph 기반 `engine.py` 전면 교체 | 기존 순수 파이썬 루프 엔진을 `StateGraph`, `SqliteSaver` 기반 구조로 전환하고 Streamlit UI 이벤트 규격(`tool_start`, `tool_end`, `text`)을 맞춘 제너레이터 래퍼 구현 |
 | **설정 모듈화** | `settings.py` 기반 모델 및 파라미터 동적 매핑 | 하드코딩된 모델 호출부를 제거하고, `settings.py`의 `DEFAULT_SUB_MODEL`(1.5B) 및 `MODEL_PROFILES`(온도, 컨텍스트 창, 출력 한도)를 참조하도록 구조 일원화[cite: 3] |
 | **프롬프트 복원** | 런타임 시스템 프롬프트 로더 결합 | `PROMPTS_DIR` 내 다중 마크다운 파일(페르소나, 규칙)을 읽어와 `agent_node` 호출 시 선두 `SystemMessage`로 합성 주입하는 동적 파이프라인 구현[cite: 1, 3] |
 | **디코딩 가드레일** | Ollama 생성 억제 파라미터 적용 | 모델의 무한 반복 및 제어 발산을 방지하기 위해 `repeat_penalty: 1.15`와 `stop` 토큰(`["<|im_end|>", "<|endoftext|>", "### Human:", "사용자:"]`) 바인딩 |
-| **세션 영속화** | 방 단위 SQLite 체크포인터 격리 | `app.py`의 `active_room_id`를 랭그래프의 `thread_id`로 바인딩하여 `chat_checkpoints.db`에 방별 상태 및 대화 기록 격리 저장 환경 구성[cite: 1] |
+| **세션 영속화** | 방 단위 SQLite 체크포인터 격리 | `app.py`의 `active_room_id`를 랭그래프의 `thread_id`로 바인딩하여 `chat_checkpoints.db`에 방별 상태 및 대화 기록 격리 저장 환경 구성 |
 | **도구 확장 준비** | 시간/날씨 표준 도구 래핑 | `chat_utils.py`의 시간 및 날씨 조회 함수를 `@tool` 데코레이터로 표준화하고 라우터 분기 및 `ToolNode` 연동 완료[cite: 2] |
 
 ### 투두리스트
@@ -140,3 +140,26 @@
 | **DB 수명주기** | 체크포인트 DB 동기화 삭제 로직 추가 | Streamlit UI에서 대화 비우기나 방 삭제를 수행할 때 `chat_checkpoints.db`의 `thread_id` 관련 레코드(`checkpoints`, `writes`)도 함께 삭제되도록 연동, 혹은 SQLite 연동 |
 | **도구 파서 보강** | JSON 텍스트 폴백(Fallback) 처리 검증 | 모델이 네이티브 `tool_calls` 대신 텍스트로 JSON 스키마를 출력할 경우를 대비한 방어 파서의 안정성 검증 |
 | **깊은 추론 모드** | <think> 태그 허용 및 컨텍스트 조절 | 모델의 심층 답변을 위해 기능 온오프 토글 적용 |
+
+## 2026-09-21
+
+### 작업 결과
+
+| 구분 | 작업 내용 | 상세 설명 |
+| :--- | :--- | :--- |
+| **아키텍처 이식** | LangGraph 기반 `engine.py` 전면 교체 | 기존 순수 파이썬 루프 엔진을 `StateGraph`, `SqliteSaver` 기반 구조로 전환하고 Streamlit UI 이벤트 규격(`tool_start`, `tool_end`, `text`)을 맞춘 제너레이터 래퍼 구현 |
+| **설정 모듈화** | `settings.py` 기반 모델 및 파라미터 동적 매핑 | 하드코딩된 모델 호출부를 제거하고, `settings.py`의 `DEFAULT_SUB_MODEL`(1.5B) 및 `MODEL_PROFILES`(온도, 컨텍스트 창, 출력 한도)를 참조하도록 구조 일원화 |
+| **도구 동적 아키텍처** | `tools/__init__.py` 기반 중앙 레지스트리 구축 | 개별 도구를 `engine.py`에 하드코딩하던 방식을 탈피하여, `TOOL_REGISTRY` 딕셔너리를 통해 새 툴 모듈 추가 시 엔진 수정 없이 자동 로드되는 동적 아키텍처 완성 |
+| **도구 인터페이스 정석화** | 내부 비즈니스 로직과 `@tool` 인터페이스 분리 | `chat_utils.py` 및 `browser.py`의 내부 연산 로직(`_fetch_...`)과 외부 노출용 `@tool` 인터페이스를 분리하여 함수명 충돌 및 불필요한 속성 덮어쓰기 제거 |
+| **토큰 가드레일** | 브라우저 히스토리 URL/결과 전처리 필터링 | 방문 기록 조회 시 트래킹 파라미터 제거, URL 180자/제목 120자/전체 6,000자 제한을 두어 LLM 컨텍스트 잠식 및 출력 토큰 고갈 방어 |
+| **세션 영속화** | 방 단위 SQLite 체크포인터 격리 | `app.py`의 `active_room_id`를 랭그래프의 `thread_id`로 바인딩하여 `chat_checkpoints.db`에 방별 상태 및 대화 기록 격리 저장 환경 구성 |
+
+### 투두리스트
+
+| 분류 | 항목 | 세부 내용 |
+| :--- | :--- | :--- |
+| **모델 탐색** | Function Calling 특화 로컬 LLM 선정 | Ollama 네이티브 `tool_calls` 규격을 환각 없이 안정적으로 호출하는 에이전트 최적화 모델(Qwen 2.5 Instruct 정식 빌드, Llama 3.1 계열 등) 비교 테스트 |
+| **아키텍처 개선** | 사전 요약(Pre-trimming) 파이프라인 배치 | 사후 요약으로 인한 토큰 포화 문제를 원천 차단하기 위해, 메인 모델 진입 전 1.5B 서브 모델로 컨텍스트를 선제 압축하는 노드 순서 재배치 |
+| **UI/기능 확장** | '깊게 생각하기(Thinking)' 모드 UI 연동 | 복잡한 추론 질문에 대응하기 위해 `reasoning=True` 옵션 및 출력 토큰 동적 확장(4096+), `st.expander`를 활용한 추론 과정 접기/펼치기 UI 구현 검토 |
+| **DB 수명주기** | 체크포인트 DB 동기화 삭제 로직 추가 | Streamlit UI에서 대화 비우기나 방 삭제 시 `chat_checkpoints.db`의 `thread_id` 레코드(`checkpoints`, `writes`)도 함께 삭제되도록 연동 |
+| **캐릭터성 부여 후처리 모델 분리** | 라우터 기반 조건부 분기 구현 필요 | route == chat일 경우 페르소나 모델이 직접 답변, route == browser 등 툴 콜링 시 해당 작업 모델 처리 후 페르소나 모델이 후처리 |

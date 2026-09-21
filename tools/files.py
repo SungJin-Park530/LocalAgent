@@ -5,6 +5,7 @@ import re
 import json
 import shutil
 from send2trash import send2trash
+from langchain_core.tools import tool
 from config.categories import FILE_CATEGORIES, EXCLUDE_DIRS
 from config.settings import CACHE_FILE_PATH, EXPORT_DIR, DEFAULT_EXPORT_FILENAME, MAX_SCAN_LIMIT
 
@@ -15,7 +16,7 @@ MAX_FILE_SIZE = 1_000_000  # 1MB
 CACHE_FILE = os.path.normpath(os.path.abspath(CACHE_FILE_PATH))
 
 
-def search_folders(
+def _search_folders(
     path: str = ".",
     keyword: str = "",
     recursive: bool = False,
@@ -96,7 +97,7 @@ def get_unique_filepath(filepath: str) -> str:
             return new_filepath
         counter += 1
 
-def search_files(
+def _search_files(
     path: str = ".",
     keyword: str = "",
     category: str = "",
@@ -119,6 +120,8 @@ def search_files(
 
         target_extensions = FILE_CATEGORIES.get(category.lower()) if category else None
         matches = []
+        scanned_count = 0
+        hit_scan_limit = False
 
         if not recursive:
             try:
@@ -220,7 +223,7 @@ def search_files(
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def export_search_results_to_file(dest_path: str = DEFAULT_EXPORT_FILENAME, keyword: str = "") -> dict:
+def _export_search_results_to_file(dest_path: str = DEFAULT_EXPORT_FILENAME, keyword: str = "") -> dict:
     """최근 검색 결과 캐시에서 목록을 추출하여 search_result 디렉터리에 안전하게 저장합니다."""
     if not os.path.exists(CACHE_FILE):
         return {"success": False, "error": "저장할 최근 검색 결과가 없습니다. 먼저 파일 검색을 실행해 주세요."}
@@ -268,7 +271,7 @@ def export_search_results_to_file(dest_path: str = DEFAULT_EXPORT_FILENAME, keyw
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def read_file(path: str) -> dict:
+def _read_file(path: str) -> dict:
     """텍스트 파일의 내용을 읽어 반환합니다."""
     try:
         clean_path = path.strip().strip("'\"")
@@ -304,7 +307,7 @@ def read_file(path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def write_file(path: str, content: str, mode: str = "w") -> dict:
+def _write_file(path: str, content: str, mode: str = "w") -> dict:
     """지정한 파일에 텍스트 내용을 저장하거나 덧붙입니다."""
     try:
         clean_path = path.strip().strip("'\"")
@@ -332,7 +335,7 @@ def write_file(path: str, content: str, mode: str = "w") -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def delete_file(path: str) -> dict:
+def _delete_file(path: str) -> dict:
     """지정한 파일이나 폴더를 영구 삭제하지 않고 휴지통으로 안전하게 이동시킵니다."""
     try:
         clean_path = path.strip().strip("'\"")
@@ -352,7 +355,7 @@ def delete_file(path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def move_file(source_path: str, dest_path: str) -> dict:
+def _move_file(source_path: str, dest_path: str) -> dict:
     """파일이나 폴더를 다른 경로로 이동하거나 이름을 변경합니다."""
     try:
         abs_src = os.path.normpath(os.path.abspath(source_path.strip().strip("'\"")))
@@ -371,7 +374,7 @@ def move_file(source_path: str, dest_path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def check_in_last_search(keyword: str) -> dict:
+def _check_in_last_search(keyword: str) -> dict:
     """최근 검색된 파일 캐시 내에서 특정 키워드가 포함된 항목이 있는지 확인합니다."""
     if not os.path.exists(CACHE_FILE):
         return {"success": False, "error": "최근 검색 결과가 없습니다. 먼저 파일 검색을 실행해 주세요."}
@@ -400,7 +403,96 @@ def check_in_last_search(keyword: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# 도구 정의 리스트 (LLM 스키마 동기화)
+@tool
+def search_folders(
+    path: str = ".",
+    keyword: str = "",
+    recursive: bool = False,
+    max_results: int = 50
+) -> dict:
+    """디렉터리(폴더) 목록만 빠르게 조회하거나 키워드로 폴더를 검색합니다."""
+    return _search_folders(
+        path=path,
+        keyword=keyword,
+        recursive=recursive,
+        max_results=max_results,
+    )
+
+
+@tool
+def search_files(
+    path: str = ".",
+    keyword: str = "",
+    category: str = "",
+    min_size_mb: float = 0.0,
+    max_size_mb: float = 0.0,
+    recursive: bool = False,
+    max_results: int = 50
+) -> dict:
+    """폴더 내의 항목을 조회하거나 조건에 맞는 파일을 검색합니다."""
+    return _search_files(
+        path=path,
+        keyword=keyword,
+        category=category,
+        min_size_mb=min_size_mb,
+        max_size_mb=max_size_mb,
+        recursive=recursive,
+        max_results=max_results,
+    )
+
+
+@tool
+def export_search_results_to_file(
+    dest_path: str = DEFAULT_EXPORT_FILENAME,
+    keyword: str = "",
+) -> dict:
+    """최근 검색 결과 캐시를 search_result 디렉터리에 저장합니다."""
+    return _export_search_results_to_file(dest_path=dest_path, keyword=keyword)
+
+
+@tool
+def read_file(path: str) -> dict:
+    """텍스트 파일의 내용을 읽어 반환합니다."""
+    return _read_file(path=path)
+
+
+@tool
+def write_file(path: str, content: str, mode: str = "w") -> dict:
+    """지정한 파일에 텍스트 내용을 저장하거나 덧붙입니다."""
+    return _write_file(path=path, content=content, mode=mode)
+
+
+@tool
+def delete_file(path: str) -> dict:
+    """지정한 파일이나 폴더를 휴지통으로 안전하게 이동시킵니다."""
+    return _delete_file(path=path)
+
+
+@tool
+def move_file(source_path: str, dest_path: str) -> dict:
+    """파일이나 폴더를 다른 경로로 이동하거나 이름을 변경합니다."""
+    return _move_file(source_path=source_path, dest_path=dest_path)
+
+
+@tool
+def check_in_last_search(keyword: str) -> dict:
+    """최근 검색 결과에서 특정 키워드가 포함된 항목을 확인합니다."""
+    return _check_in_last_search(keyword=keyword)
+
+
+# LangGraph에 등록할 도구 인스턴스 목록
+FILES_TOOLS = [
+    search_folders,
+    search_files,
+    export_search_results_to_file,
+    read_file,
+    write_file,
+    delete_file,
+    move_file,
+    check_in_last_search,
+]
+
+# UI용 도구 정의 리스트 (LLM 스키마 동기화)
 FILES_SCHEMAS = [
     {
         "type": "function",

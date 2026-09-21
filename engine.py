@@ -11,7 +11,6 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -29,50 +28,12 @@ from config.settings import (
     PROMPTS_DIR,
     SYSTEM_PROMPTS_DIR,
 )
-from tools.browser import search_browser_history as raw_search_browser_history
-from tools.chat_utils import (
-    get_current_time as raw_get_current_time,
-)
-from tools.chat_utils import (
-    get_current_weather as raw_get_current_weather,
-)
+from tools import TOOL_REGISTRY
 
 # data 폴더 하위에 체크포인트 DB 격리
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 CHECKPOINT_DB_PATH = os.path.join(DATA_DIR, "chat_checkpoints.db")
-
-
-# ---------------------------------------------------------
-# 2. 도구(Tools) 표준 래핑
-# ---------------------------------------------------------
-@tool
-def get_current_time() -> dict:
-    """현재 시스템의 날짜, 요일, 시간을 확인합니다."""
-    return raw_get_current_time()
-
-
-@tool
-def get_current_weather(location: str = "Seoul") -> dict:
-    """현재 위치(기본 Seoul 또는 입력받은 도시)의 날씨와 기온을 조회합니다."""
-    return raw_get_current_weather(location=location)
-
-
-@tool
-def search_browser_history(
-    keyword: str = "", days: int = 7, limit: int = 5
-) -> str:
-    """Chrome 브라우저 방문 기록을 조회합니다. 사용자가 들어간 웹사이트 내역이나 URL을 찾을 때 사용합니다."""
-    return raw_search_browser_history(keyword=keyword, days=days, limit=limit)
-
-
-# 기본 제공 도구 셋
-ALL_AVAILABLE_TOOLS = [
-    get_current_time,
-    get_current_weather,
-    search_browser_history,
-]
-TOOL_MAP = {t.name: t for t in ALL_AVAILABLE_TOOLS}
 
 
 # ---------------------------------------------------------
@@ -125,15 +86,17 @@ def agent_node(
 ) -> dict:
     route = state.get("route", "chat")
 
-    target_tools = []
-    if route != "chat":
-        for t in active_tool_instances:
-            if (
-                (route == "browser" and "browser" in t.name)
-                or (route == "time" and "time" in t.name)
-                or (route == "weather" and "weather" in t.name)
-            ):
-                target_tools.append(t)
+    route_tool_names = {
+        "browser": "search_browser_history",
+        "time": "get_current_time",
+        "weather": "get_current_weather",
+    }
+    routed_tool_name = route_tool_names.get(route)
+    target_tools = (
+        [t for t in active_tool_instances if t.name == routed_tool_name]
+        if routed_tool_name
+        else active_tool_instances
+    )
 
     llm_runner = main_llm.bind_tools(target_tools) if target_tools else main_llm
 
@@ -252,9 +215,14 @@ def run_agent_engine(
                     system_content += f.read() + "\n\n"
 
     # 2. 방에 장착된 도구 인스턴스 필터링
-    allowed_names = [t.get("function", {}).get("name") for t in tools]
+    allowed_names = {
+        tool_schema.get("function", {}).get("name")
+        for tool_schema in tools
+    }
     active_tools = [
-        TOOL_MAP[name] for name in allowed_names if name in TOOL_MAP
+        TOOL_REGISTRY[name]
+        for name in allowed_names
+        if name in TOOL_REGISTRY
     ]
 
     # 3. 동적 그래프 빌드
@@ -269,7 +237,7 @@ def run_agent_engine(
             system_prompt=system_content.strip()
         ),
     )
-    builder.add_node("tools", ToolNode(active_tools if active_tools else [get_current_time]))
+    builder.add_node("tools", ToolNode(active_tools))
     builder.add_node("summarize_node", summarize_node)
     
     # 1) 시작 진입점(Entrypoint) 연결 -> 에러 해결 핵심
