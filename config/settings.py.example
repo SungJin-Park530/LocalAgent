@@ -29,8 +29,6 @@ AVAILABLE_MODELS = {
     "sub_model": "모델명"
 }
 
-CURRENT_MODEL = AVAILABLE_MODELS["default"]
-
 # 모델별 최적 파라미터 매핑
 MODEL_PROFILES = {
     "default_model": {
