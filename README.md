@@ -1,23 +1,46 @@
-# Local Agent: 프라이버시 중심의 경량 온프레미스 AI 에이전트 시스템
+# Local Agent: 로컬 LLM 기반 작업 에이전트
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-000000?logo=ollama&logoColor=white)](https://ollama.com/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Orchestration-1C3C3C)](https://langchain-ai.github.io/langgraph/)
+[![LangChain](https://img.shields.io/badge/LangChain-Core-1C3C3C)](https://www.langchain.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-Checkpoints-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 
-로컬 하드웨어(VRAM) 제약 환경에서 데이터 외부 유출 없이 로컬 PC 파일 시스템 제어 및 일상 작업을 자율 수행하는 **온프레미스(On-Premise) sLLM 기반 AI 에이전트 시스템**입니다.
+Ollama에서 실행하는 로컬 LLM과 LangGraph를 이용해 대화, 파일 작업, 시간·날씨 조회, Chrome 방문 기록 조회를 제공하는 Python 프로젝트입니다. Streamlit 웹 UI와 별도의 터미널 CLI를 포함합니다.
 
-상용 클라우드 LLM API의 토큰 과금과 사내 민감 데이터 유출 리스크를 해소하기 위해 기획되었으며, 순수 Python 기반의 경량 에이전트 런타임과 도구 바인딩(Tool Binding), 계층적 탐색(Tree-of-Thought) 추론 체계를 구현했습니다.
+모델 추론과 파일 처리는 로컬에서 수행합니다. 단, 날씨 도구는 `wttr.in`에 요청하므로 해당 기능 사용 시 네트워크 연결이 필요합니다.
 
 ---
 
 ## 📌 주요 특징 (Key Highlights)
 
-- **데이터 주권 및 비용 제로**: 외부 클라우드 통신 없이 로컬 환경(Ollama)에서 모델 추론 및 파일 시스템 제어를 완결하여 기밀 데이터 유출 방지 및 API 호출 비용 원천 차단
-- **하드웨어 제약 기반 모델 최적화**: VRAM 스왑 및 추론 지연을 방지하기 위해 체급 최적화(Qwen 14B ➔ 9B)를 단행하여 단일 GPU에서 쾌적한 턴어라운드 타임 확보
-- **컨텍스트 격리 캐싱 아키텍처**: 수천 개의 파일 검색 결과로 인한 컨텍스트 윈도우 오버플로우를 막기 위해 검색 원본은 로컬 파일에 격리하고, 에이전트에는 통계 메타데이터만 전달하는 파이프라인 구축
-- **환각 및 과잉 도구 호출 방어 (Over-tooling 방지)**: SLM 특유의 도구 호출 편향과 가짜 경로 생성(Hallucination)을 막기 위한 행동 동사 기반 스키마 노출 제어 및 안전 덮어쓰기 방어 로직 구현
-- **모듈화된 프롬프트 & 멀티 룸 관리**: 페르소나, 일반 대화, 파일 제어, 작업 흐름 프롬프트를 분리하고, 채팅방별 프롬프트와 도구 스키마를 선택하는 룸 관리 시스템 구축
+- **로컬 추론**: Ollama 모델 프로필을 선택해 사용하며, 현재 기본 프로필은 Qwen 3.5 계열 9B 모델
+- **도구 실행**: LangGraph에서 방별로 선택된 도구를 실행하며, 파일 검색 결과는 로컬 캐시에 저장
+- **대화 관리**: 채팅방별 SQLite 체크포인트와 컨텍스트 요약 노드 사용
+- **모듈 구성**: 프롬프트와 도구를 분리하고, Streamlit에서 방별로 선택 가능
+
+## 기술 스택
+UI부터 로컬 모델 실행과 대화 상태 저장까지 Python 생태계의 구성 요소를 사용합니다.
+
+| 구분 | 기술 |
+|---|---|
+| 언어 | Python 3.10+ |
+| 웹 UI | Streamlit |
+| 에이전트 그래프 및 오케스트레이션 | LangGraph |
+| LLM 통합 | LangChain Core, `langchain-ollama` |
+| 로컬 모델 서빙 | Ollama |
+| 대화 상태 저장 | SQLite, LangGraph SQLite Checkpointer |
+
+## 모델 특징 비교
+`progress/model_test_results.md`의 기록을 요약했습니다. 모델별 결과는 현재 작성된 테스트 메모 기준이며, 테스트가 진행 중인 모델은 제외했습니다.
+
+| 모델 | 관찰된 특징 |
+|---|---|
+| Qwen 2.5 Coder 14B | 프롬프트 이행이 미흡하고 도구 호출 및 캐릭터 대화에 부적합한 것으로 기록됨 |
+| Qwen 2.5 14B Instruct | 도구 호출은 수행하지만 한국어 대화에서 중국어가 섞이는 경우가 있었고, 결과 보고 지시나 브라우저 기록 조회 지시 이행이 미흡함 |
+| Qwen 3.5 9B | 프롬프트 이행과 도구 호출은 양호하나, 일부 상황에서 추론이 길어지거나 도구 호출 루프가 반복됨 |
+| Gemma 4 12B | 라우터 오분류 상황에서도 파일 도구를 호출한 사례가 있었으나, 브라우저 기록 조회는 도구가 분류된 뒤에도 거부한 사례가 기록됨 |
 
 ---
 
@@ -32,134 +55,133 @@ flowchart TB
         B[room_manager.py\n방/프롬프트/도구 메타 관리]
     end
 
-    subgraph Core ["에이전트 코어 (Pure Python)"]
-        C[engine.py\nLangGraph 추론 그래프 및 멀티턴 제어]
-        D[config/settings.py\n모델 프로필 및 런타임 옵션]
-        E[prompts/\n모듈형 프롬프트 및 라우터 지침]
+    subgraph Core ["에이전트 코어"]
+        C[engine.py\nLangGraph 라우팅·도구 루프·요약]
+        D[config/settings.py\n모델 프로필 및 요약 임계치]
+        E[prompts/\n방별 프롬프트 및 라우터 지침]
     end
 
-    subgraph Local_LLM ["로컬 서빙 (Ollama Engine)"]
-        F[(메인 모델 및 1.5B 라우터/요약 모델)]
+    subgraph Local_LLM ["Ollama"]
+        F[(선택된 메인 모델)]
+        L[(qwen2.5:1.5b\n라우터 및 요약)]
     end
 
     subgraph Tools ["도구 실행 파이프라인"]
-        G[tools/\n도구 스키마 및 구현 모듈]
-        H[tools/files.py\n파일/폴더/캐시 제어]
-        I[chat_utils.py + browser.py\n시간/날씨/방문 기록 도구]
-        J[(cache/search_cache.json\n대용량 검색 결과 격리)]
+        G[tools/TOOL_REGISTRY\n방별 도구 선택 및 실행]
+        H[tools/files.py\n파일·폴더 작업]
+        I[chat_utils.py / browser.py\n시간·날씨·방문 기록]
+        J[(cache/search_cache.json\n검색 결과 캐시)]
     end
+
+    K[(data/chat_checkpoints.db\n방별 그래프 상태)]
+    M[wttr.in\n날씨 API]
 
     A <--> B
     A <--> C
     C <--> D
     C <--> E
     C <--> F
+    C <--> L
     C <--> G
     G --> H
     G --> I
     H <--> J
+    C <--> K
+    I -. 날씨 조회 .-> M
 ```
 
-현재 Streamlit 경로는 LangGraph의 라우터와 요약 노드, 방별 SQLite 체크포인트를 사용하며 시간·날씨·브라우저 도구를 연결합니다. 파일 도구(`tools/files.py`)는 CLI와 기존 도구 스키마/디스패처에서 사용되고, Streamlit 엔진으로의 직접 통합은 진행 중입니다.
+Streamlit은 방별 프롬프트와 도구 스키마를 엔진에 전달합니다. 엔진은 먼저 라우터로 시간·날씨·브라우저 요청을 분류한 뒤, 그 외 요청에는 선택된 도구를 제공하고 대화가 길어지면 요약합니다. CLI(`agent.py`)는 별도의 Ollama 도구 루프를 제공합니다.
 
 ### 디렉토리 구조
 
 ```
 LocalAgent/
-├── app.py                     # Streamlit 기반 웹 인터페이스 및 세션 관리
-├── engine.py                  # LangGraph 기반 추론, 도구 루프 및 SQLite 체크포인트
-├── room_manager.py            # 방(Room) 단위 프롬프트/도구 동적 장착 및 관리 모듈
-├── agent.py                   # 터미널 기반 CLI 에이전트 런타임
-├── test_graph.py              # LangGraph 라우팅/요약 흐름 검증용 테스트
-├── test_ollama.py             # Ollama 연결 및 모델 동작 확인용 테스트
-├── requirements.txt           # 프로젝트 의존성 목록
-├── cache/                     # 파일 검색 결과 캐시 저장소
-├── data/                      # 실행 시 체크포인트 DB가 생성되는 영역
-├── config/                    # 런타임 환경 설정 지정
-├── prompts/                   # 사용자가 선택적으로 장착하는 모듈형 프롬프트
-│   └── system/                # 애플리케이션 내부 전용 시스템 프롬프트
-├── tools/                     # 도구 스키마 및 구현 패키지
-├── progress/                  # 개발 작업 및 문제 해결 기록
-└── legacy/                    # 이전 프롬프트/도구 구현 보관
+├── app.py                     # Streamlit 웹 UI
+├── agent.py                   # Ollama 기반 CLI
+├── engine.py                  # LangGraph 실행, 스트리밍 및 SQLite 체크포인트
+├── room_manager.py            # 방 템플릿과 프롬프트/도구 목록
+├── config/
+│   ├── __init__.py
+│   ├── categories.py          # 파일 카테고리와 제외 폴더
+│   └── settings.py            # 경로, 모델 프로필, 요약 기준
+├── prompts/
+│   ├── system/00_router.md    # 요청 의도 분류 지침
+│   ├── 01_persona.md
+│   ├── 02_chat.md
+│   ├── 03_files.md
+│   └── 04_agent_workflow.md
+├── tools/
+│   ├── __init__.py            # 스키마 및 LangChain 도구 레지스트리
+│   ├── files.py               # 파일·폴더 검색, 읽기/쓰기/이동/삭제
+│   ├── chat_utils.py          # 시간 및 날씨 조회
+│   └── browser.py             # Chrome 방문 기록 조회
+├── cache/                     # 검색 결과 캐시
+├── data/                      # 실행 중 chat_checkpoints.db 생성
+├── search_result/             # 검색 결과 내보내기
+├── progress/                  # 작업 기록, 트러블슈팅, 모델 검증 기록
+├── legacy/                    # 이전 구현 파일
+├── test_graph.py              # 그래프 동작 확인 스크립트
+├── test_ollama.py             # Ollama 모델 확인 스크립트
+└── requirements.txt
 ```
 
 ## ⚙️ 주요 기능
 ### 1. 지능형 파일 시스템 제어
-- 계층적 탐색(Tree-of-Thought): 디스크 루트 전수 조사를 지양하고, search_folders로 상위 구조 파악 후 유력 폴더만 정밀 탐색하는 3단계 자율 추론 전략 적용
-- 대용량 파일 검색 및 선별 저장: 용량 범위(min_size_mb, max_size_mb) 필터링을 지원하며, 5만 개 스캔 한도 도달 시 에이전트가 스스로 하위 경로를 좁혀 재탐색
-- 데이터 안전 파이프라인: 파일 덮어쓰기 사고를 방지하기 위해 연속 쓰기 차단 및 파일명 자동 넘버링((1), (2)) 유틸리티 적용
+- 폴더/파일 검색, 텍스트 파일 읽기·쓰기·이동, 휴지통 이동 및 검색 결과 내보내기를 제공합니다.
+- 파일 검색은 카테고리와 용량 범위 조건을 지원하며, 재귀 검색은 최대 50,000개 검사 제한을 둡니다.
+- 검색 결과는 `cache/search_cache.json`에 임시 저장하고 내보내기 파일은 `search_result/`에 저장합니다.
 
 ### 2. 모듈형 방(Room) 관리 및 동적 툴 바인딩
-- 독립 세션 제어: 목적별로 방을 생성하고, 방마다 필요한 프롬프트와 도구 스키마(ALL_SCHEMAS, CHAT_SCHEMAS)를 선택해 관리
-- 채팅 전용 도구 셋 분리: 일상 잡담 방에서 모델의 억지 도구 호출을 막기 위해 파일 제어 권한을 배제하고 시간/날씨 등의 기본 유틸리티만 바인딩
+- Streamlit에서 방을 만들고 방별 프롬프트와 도구를 선택할 수 있습니다.
+- 시간, 날씨, Chrome 방문 기록 조회는 라우터 분류를 사용하고, 파일 요청을 포함한 일반 요청은 선택된 도구를 모델에 제공합니다.
 
-### 3. 무중단 런타임 제어
-- CLI/UI 모델 스위칭: 대화 맥락을 유지한 상태에서 런타임에 모델 프로필(/model)을 즉시 교체 가능
-- 응답 후처리 파이프라인: 추론 모델(DeepSeek/Qwen 계열)의 `<think>` 사고 과정 태그 및 자가 역할극 찌꺼기를 정규식 기반으로 자동 정제하여 사용자에게 전달
+### 3. 대화 및 모델 실행
+- Ollama 모델 프로필을 UI에서 선택할 수 있으며, 기본 메인 모델은 Qwen 3.5 계열 9B입니다. 라우터와 요약에는 `qwen2.5:1.5b`를 사용합니다.
+- LangGraph 상태는 방 ID를 기준으로 `data/chat_checkpoints.db`에 저장됩니다.
+- 기본 12,000 토큰 기준을 넘으면 이전 대화를 요약하고 최근 4개 메시지를 유지합니다. UI는 본문과 `<think>` 출력을 스트리밍해 표시합니다.
 
-## 💡 핵심 엔지니어링 문제 해결 (Troubleshooting)
-### 1. 대용량 파일 검색 시 컨텍스트 윈도우 폭주 해결
-- 문제: 하드디스크 탐색 시 수백 개의 경로 문자열이 한 번에 유입되어 모델의 컨텍스트 윈도우 한도를 초과하고 극심한 응답 지연 및 가짜 경로 환각이 발생함.
-
-- 해결: 검색 결과 원본을 로컬 캐시(.search_cache.json)에 격리 저장하고, LLM에는 발견 건수 등 최소 메타데이터만 반환하도록 경량화함. 전체 저장이 필요할 때는 백엔드가 캐시 파일에서 원본을 직접 꺼내 출력하는 전용 파이프라인을 구축함.
-
-### 2. 하드웨어(VRAM) 병목에 따른 모델 체급 최적화
-- 문제: 초기 Qwen 2.5 14B 구동 시 16GB VRAM 한도를 초과하여 시스템 RAM으로 오프로딩(Offloading)이 발생, 토큰 생성 속도가 실사용 불가능한 수준으로 저하됨.
-
-- 해결: 양자화 및 파라미터 벤치마킹을 거쳐 Qwen 3.5 9B 체급으로 전환, VRAM 점유율을 약 50% 수준으로 억제하여 안정적인 추론 속도 및 멀티턴 컨텍스트 유지 공간을 확보함.
-
-### 3. 챗 템플릿 불일치로 인한 응답 지연 및 침묵 현상
-- 문제: 잡담 모드에서 도구를 완전히 배제(tools=None)했을 때, 특정 SLM의 시스템 프롬프트 및 챗 템플릿 규격 불일치로 모델이 본문을 생성하지 못하고 `<think>` 태그 내부에 갇히거나 무한 루프에 빠짐.
-
-- 해결: 빈 더미 도구 대신 기본 유틸리티 도구(chat_utils)를 항상 주입하여 스키마 구조의 일관성을 유지하고, 불필요한 호출 편향을 방지하기 위해 프롬프트 행동 수칙을 정밀 튜닝함.
-
-### 4. 사전 학습된 '파일 쓰기 반사'로 인한 덮어쓰기 사고 방어
-- 문제: 검색 결과 저장 도구를 호출한 직후, LLM이 과거 학습 데이터의 습관대로 범용 write_file 도구를 연달아 호출하여 방금 저장한 파일을 빈 내용으로 덮어쓰는 이상 동작 발생.
-
-- 해결: 도구 스키마의 역할 분리를 명확히 하고, 코드 레벨에서 동일 경로에 대한 비정상적인 연속 쓰기 요청을 탐지하여 강제 차단하는 안전 가드레일을 구축함.
+## 참고 사항
+- 날씨 조회는 `wttr.in` 외부 API에 연결합니다. 나머지 LLM 추론 및 파일 작업은 로컬 환경에서 처리됩니다.
+- `data/`, `cache/`, `search_result/`에는 실행 중 데이터가 생성됩니다. 대화 체크포인트는 `data/chat_checkpoints.db`에 저장됩니다.
 
 ## 🚀 시작하기
 - 요구 사양
     - Python 3.10+
     - Ollama 런타임
-    - 권장 GPU: VRAM 12GB 이상 (8B~9B 모델 기준)
+    - 필요한 GPU 메모리는 선택 모델, 양자화, 컨텍스트 설정에 따라 달라집니다.
 
 ## 설치 및 환경 설정
-```Bash
-# 1. 저장소 클론
-git clone [https://github.com/YOUR_USERNAME/LocalAgent.git](https://github.com/YOUR_USERNAME/LocalAgent.git)
-cd LocalAgent
-
-# 2. 가상환경 구성
+```powershell
 python -m venv .venv
-source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
 
-# 3. 패키지 설치
-pip install -r requirements.txt
+Git Bash 또는 Linux/macOS에서는 가상환경을 다음처럼 활성화합니다.
 
-# 4. 설정 파일 준비
-cp config/settings.py.example config/settings.py
+```bash
+source .venv/Scripts/activate  # Windows Git Bash
+# 또는 source .venv/bin/activate
 ```
 
 ## 로컬 LLM 서빙 (Ollama)
-```Bash
-ollama pull qwen2.5:14b  # 또는 설정한 경량 모델 풀
+```bash
+ollama pull fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b
+ollama pull qwen2.5:1.5b
 ```
 
+설정된 다른 선택 모델은 `config/settings.py`의 `MODEL_PROFILES`에서 확인할 수 있습니다.
+
 ## 실행
-```Bash
-# Web UI 인터페이스 실행 (Streamlit)
+```bash
+# Streamlit 웹 UI
 streamlit run app.py
 
-# 또는 터미널 CLI 에이전트 실행
+# 별도 터미널에서 CLI 에이전트 실행
 python agent.py
 ```
 
-## 🗺️ 향후 로드맵 (Roadmap)
-- 동적 도구 노출 (Dynamic Tool Exposure): 사용자 입력의 의도를 1차 판별하여 잡담 시 도구 스키마를 완전히 숨기는 로어북(Lorebook) 방식 적용
-
-- Human-in-the-Loop (승인 인터랙션): 영구 삭제, 외부 수정 등 위험 작업 실행 전 UI 팝업을 통한 사용자 명시적 승인 절차 추가
-
-- 대화 컨텍스트 영속화 및 메모리 요약: 방별 대화 내역의 DB 적재 및 슬라이딩 윈도우 기반 자동 요약 메모리 파이프라인 도입
-
-- 프레임워크 확장성 검토: 로컬 문서 색인(RAG) 및 벡터 임베딩 결합 시 LangChain/LlamaIndex 프레임워크 점진적 마이그레이션
+## 개발 자료
+- `progress/work-log.md`: 작업 기록
+- `progress/troubleshooting.md`: 문제 해결 기록
+- `progress/model_test_results.md`: 모델 테스트 메모
