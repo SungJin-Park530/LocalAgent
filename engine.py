@@ -10,11 +10,12 @@ from langchain_core.messages import (
     RemoveMessage,
     SystemMessage,
     ToolMessage,
+    message_chunk_to_message,
 )
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 from langgraph.prebuilt import ToolNode
 
 # ---------------------------------------------------------
@@ -22,6 +23,7 @@ from langgraph.prebuilt import ToolNode
 # ---------------------------------------------------------
 from config.settings import (
     BASE_DIR,
+    CONTEXT_SUMMARY_THRESHOLD,
     DEFAULT_PROFILE,
     MODEL_PROFILES,
     DEFAULT_SUB_MODEL,
@@ -29,6 +31,8 @@ from config.settings import (
     SYSTEM_PROMPTS_DIR,
 )
 from tools import TOOL_REGISTRY
+
+THINKING_SOFT_CAP_CHARS = 4000
 
 # data 폴더 하위에 체크포인트 DB 격리
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -103,13 +107,24 @@ def agent_node(
     full_messages = (
         [SystemMessage(content=system_prompt)] if system_prompt else []
     ) + state["messages"]
-    response = llm_runner.invoke(full_messages)
+
+    def stream_response(messages: list) -> AIMessage:
+        response_chunk = None
+        for chunk in llm_runner.stream(messages):
+            response_chunk = (
+                chunk if response_chunk is None else response_chunk + chunk
+            )
+        if response_chunk is None:
+            return AIMessage(content="")
+        return message_chunk_to_message(response_chunk)
+
+    response = stream_response(full_messages)
 
     if not response.tool_calls and not response.content.strip():
         retry_messages = full_messages + [
             HumanMessage(content="최종 답변만 간결하게 작성하세요.")
         ]
-        response = llm_runner.invoke(retry_messages)
+        response = stream_response(retry_messages)
 
     # ---------------------------------------------------------
     # [방어 로직] 모델이 tool_calls 대신 텍스트로 JSON을 뱉었을 때 구제
@@ -134,11 +149,17 @@ def agent_node(
 def summarize_node(state: AgentState) -> dict:
     """오래된 컨텍스트 요약 및 메시지 제거 (1.5B 처리)"""
     existing_summary = state.get("summary", "")
-    messages_to_summarize = state["messages"][:-2]
+    recent_messages = state["messages"][-4:]
+    messages_to_summarize = state["messages"][:-4]
 
     dialogue_lines = []
     for msg in messages_to_summarize:
-        role = "사용자" if isinstance(msg, HumanMessage) else "어시스턴트"
+        if isinstance(msg, HumanMessage):
+            role = "사용자"
+        elif isinstance(msg, ToolMessage):
+            role = f"도구({msg.name})"
+        else:
+            role = "어시스턴트"
         dialogue_lines.append(f"{role}: {msg.content}")
     dialogue_text = "\n".join(dialogue_lines)
 
@@ -154,28 +175,44 @@ def summarize_node(state: AgentState) -> dict:
     res = summarizer_llm.invoke(prompt)
     new_summary = res.content.strip()
 
-    delete_actions = [
-        RemoveMessage(id=m.id)
-        for m in messages_to_summarize
-        if hasattr(m, "id") and m.id
-    ]
-    return {"summary": new_summary, "messages": delete_actions}
+    return {
+        "summary": new_summary,
+        "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)]
+        + [SystemMessage(content=f"이전 대화 요약: {new_summary}")]
+        + recent_messages,
+    }
 
 
-def should_summarize(state: AgentState) -> Literal["summarize_node", "__end__"]:
-    # 턴 수 관리 (메시지 10개 초과 시 압축)
-    if len(state["messages"]) > 10:
+def should_summarize(
+    state: AgentState, token_model: ChatOllama
+) -> Literal["summarize_node", "__end__"]:
+    messages = state["messages"]
+    try:
+        token_count = token_model.get_num_tokens_from_messages(messages)
+    except Exception:
+        total_chars = sum(
+            len(str(getattr(message, "content", "")))
+            + len(str(getattr(message, "tool_calls", "")))
+            for message in messages
+        )
+        token_count = int(total_chars / 2.5)
+
+    print(
+        f"[컨텍스트 감시] 메시지 {len(messages)}개 | "
+        f"누적 {token_count} 토큰 | 임계치 {CONTEXT_SUMMARY_THRESHOLD} 토큰"
+    )
+    if token_count > CONTEXT_SUMMARY_THRESHOLD:
         return "summarize_node"
     return END
 
 
 def check_tool_or_summary(
-    state: AgentState,
+    state: AgentState, token_model: ChatOllama
 ) -> Literal["tools", "summarize_node", "__end__"]:
     last_msg = state["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "tools"
-    return should_summarize(state)
+    return should_summarize(state, token_model)
 
 
 # ---------------------------------------------------------
@@ -198,9 +235,9 @@ def run_agent_engine(
     main_llm = ChatOllama(
         model=model_name,
         temperature=opts.get("temperature", 0.3),
-        num_predict=opts.get("num_predict", 1024),
+        num_predict=opts.get("num_predict", 8192),
         num_ctx=opts.get("num_ctx", 16384),
-        reasoning=opts.get("reasoning", False),
+        reasoning=opts.get("reasoning", True),
         repeat_penalty=1.15,  # 무한 반복 루프 억제
         stop=["<|im_end|>", "<|endoftext|>", "### Human:", "사용자:"],  # 발산 강제 차단
     )
@@ -249,7 +286,7 @@ def run_agent_engine(
     # 3) 에이전트 완료 후 조건 분기 (도구 실행, 요약 노드, 종료)
     builder.add_conditional_edges(
         "agent",
-        check_tool_or_summary,
+        lambda state: check_tool_or_summary(state, main_llm),
         {
             "tools": "tools",
             "summarize_node": "summarize_node",
@@ -285,32 +322,116 @@ def run_agent_engine(
         events = graph.stream(
             {"messages": input_messages},
             config=config,
-            stream_mode="updates"
+            stream_mode=["messages", "updates"],
         )
 
-        for event in events:
-            # [디버깅 로그 추가] 실제 어떤 노드 이벤트가 들어오는지 콘솔에 출력
-            print(f"\n>>> [LangGraph Event 수신]: {event}")
+        in_thinking = False
+        thinking_chars_count = 0
+        thinking_limit_reached = False
+        marker_buffer = ""
 
-            # 1. agent 노드에서 발생한 이벤트 처리
-            if "agent" in event:
-                msg = event["agent"]["messages"][-1]
-                print(f">>> [Agent 노드 메시지 타입]: {type(msg)}, 내용: {msg.content}")
+        def emit_content(content: str) -> list[dict]:
+            nonlocal in_thinking, thinking_chars_count, thinking_limit_reached
+            if not content:
+                return []
+            if not in_thinking or thinking_limit_reached:
+                return [{"type": "text_chunk", "content": content}]
 
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        yield {"type": "tool_start", "name": tc["name"]}
-                elif msg.content:
-                    yield {"type": "text", "content": msg.content}
+            remaining = THINKING_SOFT_CAP_CHARS - thinking_chars_count
+            thinking_part = content[:remaining]
+            events_out = []
+            if thinking_part:
+                thinking_chars_count += len(thinking_part)
+                events_out.append({"type": "thinking_chunk", "content": thinking_part})
 
-            # 2. tools 노드 처리
-            elif "tools" in event:
-                for tool_msg in event["tools"]["messages"]:
-                    yield {
-                        "type": "tool_end",
-                        "name": getattr(tool_msg, "name", "tool"),
-                        "result": tool_msg.content
-                    }
+            overflow = content[len(thinking_part):]
+            if overflow:
+                in_thinking = False
+                thinking_limit_reached = True
+                events_out.append({
+                    "type": "thinking_limit_reached",
+                    "content": "\n[추론 상한 도달: 답변 전환]\n",
+                })
+                events_out.append({"type": "text_chunk", "content": overflow})
+            return events_out
+
+        def consume_text(content: str, flush: bool = False) -> list[dict]:
+            nonlocal in_thinking, marker_buffer, thinking_limit_reached
+            marker_buffer += content
+            emitted = []
+            markers = ("<think>", "</think>")
+
+            while marker_buffer:
+                matches = [
+                    (marker_buffer.find(marker), marker)
+                    for marker in markers
+                    if marker_buffer.find(marker) >= 0
+                ]
+                if matches:
+                    marker_index, marker = min(matches, key=lambda item: item[0])
+                    emitted.extend(emit_content(marker_buffer[:marker_index]))
+                    marker_buffer = marker_buffer[marker_index + len(marker):]
+                    if marker == "<think>" and not thinking_limit_reached:
+                        in_thinking = True
+                    elif marker == "</think>":
+                        in_thinking = False
+                    continue
+
+                if flush:
+                    emitted.extend(emit_content(marker_buffer))
+                    marker_buffer = ""
+                    break
+
+                partial_length = max(
+                    (
+                        length
+                        for marker in markers
+                        for length in range(1, len(marker))
+                        if marker_buffer.endswith(marker[:length])
+                    ),
+                    default=0,
+                )
+                if partial_length:
+                    safe_length = len(marker_buffer) - partial_length
+                    emitted.extend(emit_content(marker_buffer[:safe_length]))
+                    marker_buffer = marker_buffer[safe_length:]
+                    break
+                else:
+                    emitted.extend(emit_content(marker_buffer))
+                    marker_buffer = ""
+
+            return emitted
+
+        for mode, payload in events:
+            if mode == "messages":
+                chunk, metadata = payload
+                if metadata.get("langgraph_node") != "agent":
+                    continue
+                token = chunk.content
+                if isinstance(token, str):
+                    for stream_event in consume_text(token):
+                        yield stream_event
+                elif isinstance(token, list):
+                    for block in token:
+                        if isinstance(block, dict) and isinstance(block.get("text"), str):
+                            for stream_event in consume_text(block["text"]):
+                                yield stream_event
+
+            elif mode == "updates":
+                if "agent" in payload:
+                    msg = payload["agent"]["messages"][-1]
+                    for tool_call in getattr(msg, "tool_calls", []):
+                        yield {"type": "tool_start", "name": tool_call["name"]}
+                elif "tools" in payload:
+                    for tool_msg in payload["tools"]["messages"]:
+                        yield {
+                            "type": "tool_end",
+                            "name": getattr(tool_msg, "name", "tool"),
+                            "result": tool_msg.content,
+                        }
+
+        for stream_event in consume_text("", flush=True):
+            yield stream_event
 
     finally:
         conn.close()

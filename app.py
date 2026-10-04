@@ -261,6 +261,10 @@ if user_input:
     # 2. 모델 응답 스트림 수신
     with st.chat_message("assistant"):
         status_box = st.empty()
+        thinking_status = None
+        thinking_placeholder = None
+        thinking_response = ""
+        response_placeholder = st.empty()
         full_response = ""
 
         try:
@@ -283,9 +287,30 @@ if user_input:
                 elif event["type"] == "tool_end":
                     with st.expander(f"도구 결과: `{event['name']}`", expanded=False):
                         st.json(event["result"])
-                elif event["type"] == "text":
-                    full_response = event["content"]
-                    st.markdown(full_response)
+                elif event["type"] == "thinking_chunk":
+                    if thinking_status is None:
+                        thinking_status = st.status("생각하는 중...", expanded=True)
+                        thinking_placeholder = thinking_status.empty()
+                    thinking_response += event["content"]
+                    thinking_placeholder.markdown(thinking_response)
+                elif event["type"] == "thinking_limit_reached":
+                    if thinking_status is not None:
+                        thinking_status.update(
+                            label="추론 상한 도달",
+                            state="complete",
+                            expanded=False,
+                        )
+                    st.warning(event["content"].strip())
+                elif event["type"] == "text_chunk":
+                    if thinking_status is not None:
+                        thinking_status.update(
+                            label="추론 완료",
+                            state="complete",
+                            expanded=False,
+                        )
+                        thinking_status = None
+                    full_response += event["content"]
+                    response_placeholder.markdown(full_response)
         finally:
             st.session_state.is_generating = False
 
