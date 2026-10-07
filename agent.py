@@ -25,6 +25,8 @@ def show_model_list(current_key: str):
     print("\n" + "=" * 50)
     print(" [모델 프로필 목록]")
     for key, prof in MODEL_PROFILES.items():
+        if prof.get("internal"):
+            continue
         marker = "▶ (사용 중)" if key == current_key else "  "
         # model_name 또는 model 키를 안전하게 탐색
         name = prof.get("name")
@@ -112,11 +114,13 @@ while True:
                 show_model_list(current_profile_key)
             else:
                 target_key = args[0].lower()
-                if target_key in MODEL_PROFILES:
+                if target_key in MODEL_PROFILES and not MODEL_PROFILES[target_key].get("internal"):
                     current_profile_key = target_key
                     active_model = MODEL_PROFILES[target_key]
+                    current_model_name = active_model["name"]
+                    current_options = active_model["options"]
                     print(f"\n[시스템] 모델 전환 완료: [{target_key}] ({active_model['name']})")
-                    print(f"[시스템] 적용 온도(Temperature): {active_model.get('temperature', 0.7)}")
+                    print(f"[시스템] 적용 온도(Temperature): {current_options.get('temperature', 0.7)}")
                 else:
                     print(f"\n[오류] 등록되지 않은 프로필입니다: '{target_key}'")
                     show_model_list(current_profile_key)

@@ -25,8 +25,8 @@ from config.settings import (
     BASE_DIR,
     CONTEXT_SUMMARY_THRESHOLD,
     DEFAULT_PROFILE,
+    DEFAULT_SUB_PROFILE,
     MODEL_PROFILES,
-    DEFAULT_SUB_MODEL,
     PROMPTS_DIR,
     SYSTEM_PROMPTS_DIR,
 )
@@ -43,9 +43,10 @@ CHECKPOINT_DB_PATH = os.path.join(DATA_DIR, "chat_checkpoints.db")
 # ---------------------------------------------------------
 # 3. 모델 및 상태(State) 정의
 # ---------------------------------------------------------
-router_llm = ChatOllama(model=DEFAULT_SUB_MODEL, temperature=0.0)
+router_model_name = MODEL_PROFILES[DEFAULT_SUB_PROFILE]["name"]
+router_llm = ChatOllama(model=router_model_name, temperature=0.0)
 summarizer_llm = ChatOllama(
-    model=DEFAULT_SUB_MODEL, temperature=0.2, num_predict=300
+    model=router_model_name, temperature=0.2, num_predict=300
 )
 
 

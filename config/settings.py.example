@@ -23,33 +23,41 @@ DEFAULT_EXPORT_PATH = os.path.join(EXPORT_DIR, "search_result.txt")
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
 SYSTEM_PROMPTS_DIR = os.path.join(PROMPTS_DIR, "system")
 
-# 모델 풀 설정
-AVAILABLE_MODELS = {
-    "default": "모델명",
-    "sub_model": "모델명"
-}
-
-# 모델별 최적 파라미터 매핑
+# 모델명과 파라미터를 프로필 하나에서 함께 관리합니다.
+# 아래 이름과 수치는 설정 형식 예시이며 실제 모델/권장값이 아닙니다.
 MODEL_PROFILES = {
     "default_model": {
-        "name": "모델명",
+        "name": "example-chat-model:latest",
         "options": {
-            "num_ctx": 16384,
-            "num_predict": 1024,
-            "temperature": 0.7,
+            "num_ctx": 4096,
+            "num_predict": 384,
+            "temperature": 0.6,
+            "repeat_penalty": 1.12,
+            "reasoning": False,
             "description": "기본 모델"
         }
     },
-    "sub_model": {
-        "name": "모델명",
+    "alternate_model": {
+        "name": "example-alt-model:demo",
         "options": {
-            "num_ctx": 16384,
-            "num_predict": 1024,
-            "temperature": 0.7,
-            "description": "서브 모델"
+            "num_ctx": 6144,
+            "num_predict": 256,
+            "temperature": 0.35,
+            "repeat_penalty": 1.08,
+            "reasoning": False,
+            "description": "대체 모델"
+        }
+    },
+    "internal_router": {
+        "name": "example-router-model:demo",
+        "internal": True,
+        "options": {
+            "temperature": 0.15,
+            "description": "라우터 및 대화 압축/요약 전용 모델"
         }
     }
 }
 
 # 기본 선택 프로필
 DEFAULT_PROFILE = "default_model"
+DEFAULT_SUB_PROFILE = "internal_router"

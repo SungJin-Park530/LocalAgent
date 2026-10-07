@@ -160,10 +160,14 @@ with st.sidebar:
         st.divider()
 
         # 모델 프로필 선택
+        selectable_model_keys = [
+            key for key, profile in MODEL_PROFILES.items()
+            if not profile.get("internal")
+        ]
         selected_model_key = st.selectbox(
             "사용할 모델",
-            options=list(MODEL_PROFILES.keys()),
-            index=list(MODEL_PROFILES.keys()).index(DEFAULT_PROFILE) if DEFAULT_PROFILE in MODEL_PROFILES else 0,
+            options=selectable_model_keys,
+            index=selectable_model_keys.index(DEFAULT_PROFILE) if DEFAULT_PROFILE in selectable_model_keys else 0,
             format_func=lambda k: f"{k} ({MODEL_PROFILES[k].get('name')})",
             disabled=st.session_state.is_generating
         )
