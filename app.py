@@ -39,7 +39,11 @@ def create_room_dialog():
     selected_prompts = st.multiselect(
         "적용할 시스템 프롬프트",
         options=list(prompt_options.keys()),
-        default=["01_persona.md"] if "01_persona.md" in prompt_options else [],
+        default=[
+            path
+            for path in ("persona/01_persona_shiki.md", "instructions/01_chat.md")
+            if path in prompt_options
+        ],
         format_func=lambda x: prompt_options.get(x, x)
     )
 

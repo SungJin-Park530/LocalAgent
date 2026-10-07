@@ -63,7 +63,7 @@ def router_node(state: AgentState) -> dict:
     """1.5B 경량 모델을 통한 초고속 의도 분류"""
     last_user_msg = state["messages"][-1].content
 
-    router_prompt_path = os.path.join(SYSTEM_PROMPTS_DIR, "00_router.md")
+    router_prompt_path = os.path.join(SYSTEM_PROMPTS_DIR, "01_router.md")
     with open(router_prompt_path, "r", encoding="utf-8") as prompt_file:
         router_prompt = prompt_file.read()
 

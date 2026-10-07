@@ -105,11 +105,11 @@ LocalAgent/
 │   ├── categories.py          # 파일 카테고리와 제외 폴더
 │   └── settings.py            # 경로, 모델 프로필, 요약 기준
 ├── prompts/
-│   ├── system/00_router.md    # 요청 의도 분류 지침
-│   ├── 01_persona.md
-│   ├── 02_chat.md
-│   ├── 03_files.md
-│   └── 04_agent_workflow.md
+│   ├── persona/01_persona_shiki.md
+│   ├── instructions/01_chat.md
+│   ├── tools/01_files.md
+│   ├── workflow/01_files_workflow.md
+│   └── system/01_router.md    # 요청 의도 분류 지침
 ├── tools/
 │   ├── __init__.py            # 스키마 및 LangChain 도구 레지스트리
 │   ├── files.py               # 파일·폴더 검색, 읽기/쓰기/이동/삭제

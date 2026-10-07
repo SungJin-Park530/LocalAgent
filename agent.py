@@ -7,7 +7,7 @@ import json
 import re
 import ollama
 from tools import ALL_SCHEMAS, execute_tool
-from config.settings import MODEL_PROFILES, DEFAULT_PROFILE
+from config.settings import MODEL_PROFILES, DEFAULT_PROFILE, PROMPTS_DIR
 
 # 사용 모델
 active_profile = MODEL_PROFILES[DEFAULT_PROFILE]
@@ -46,23 +46,40 @@ def clean_model_output(text: str) -> str:
     return text.strip()
 
 # 시스템 프롬프트 불러오기 함수
-def load_system_prompts(prompts_dir: str = "prompts") -> str:
-    """prompts 폴더 내의 .md 파일들을 정렬하여 순서대로 결합합니다."""
+def load_system_prompts(prompts_dir: str = PROMPTS_DIR) -> str:
+    """역할 순서에 따라 활성 프롬프트를 읽어 결합합니다."""
     if not os.path.exists(prompts_dir):
         raise FileNotFoundError(f"[오류] 프롬프트 디렉터리를 찾을 수 없습니다: {prompts_dir}")
 
-    md_files = sorted([f for f in os.listdir(prompts_dir) if f.endswith(".md")])
+    prompt_roles = ("persona", "instructions", "tools", "workflow")
+
+    def find_prompt_files(extension: str) -> list[str]:
+        paths = []
+        for role in prompt_roles:
+            role_dir = os.path.join(prompts_dir, role)
+            for current_dir, directories, filenames in os.walk(role_dir):
+                directories.sort()
+                paths.extend(
+                    os.path.join(current_dir, filename)
+                    for filename in sorted(filenames)
+                    if filename.endswith(extension)
+                )
+        return paths
+
+    md_files = find_prompt_files(".md")
     if not md_files:
-        example_files = [f for f in os.listdir(prompts_dir) if f.endswith(".md.example")]
-        guide = "\n".join([f"- {f} -> {f.replace('.example', '')}" for f in example_files])
+        example_files = find_prompt_files(".md.example")
+        guide = "\n".join(
+            f"- {os.path.relpath(path, prompts_dir)} -> {os.path.relpath(path, prompts_dir).replace('.example', '')}"
+            for path in example_files
+        )
         raise FileNotFoundError(
             f"\n[오류] '{prompts_dir}' 폴더에 활성화된 .md 파일이 없습니다.\n"
             f"다음 예시 파일들을 복사하여 .md 파일을 생성해 주세요:\n{guide}"
         )
 
     combined = []
-    for file_name in md_files:
-        path = os.path.join(prompts_dir, file_name)
+    for path in md_files:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read().strip()
             if content:

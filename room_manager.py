@@ -58,28 +58,34 @@ def get_available_tool_groups() -> dict:
 
 def get_available_prompts(prompts_dir: str = PROMPTS_DIR) -> list[dict]:
     """
-    prompts/ 디렉터리 내의 활성화된 .md 파일 목록을 스캔합니다.
-    UI multiselect에서 식별하기 편하도록 파일명과 미리보기를 반환합니다.
+    역할별 프롬프트 디렉터리에서 활성화된 .md 파일을 찾아 반환합니다.
+    UI 선택값에는 prompts/ 기준 상대 경로를 보존합니다.
     """
-    if not os.path.exists(prompts_dir):
-        return []
+    files = []
+    for role in ("persona", "instructions", "tools", "workflow"):
+        role_dir = os.path.join(prompts_dir, role)
+        for current_dir, directories, filenames in os.walk(role_dir):
+            directories.sort()
+            for filename in sorted(filenames):
+                if filename.endswith(".md"):
+                    path = os.path.join(current_dir, filename)
+                    relative_path = os.path.relpath(path, prompts_dir).replace(os.sep, "/")
+                    files.append((relative_path, path))
 
-    files = sorted([f for f in os.listdir(prompts_dir) if f.endswith(".md")])
     prompt_list = []
-    
-    for f in files:
-        path = os.path.join(prompts_dir, f)
-        title = f
+
+    for relative_path, path in files:
+        title = relative_path
         try:
             with open(path, "r", encoding="utf-8") as file:
                 first_line = file.readline().strip()
                 if first_line.startswith("#"):
-                    title = f"{f} ({first_line.lstrip('#').strip()})"
+                    title = f"{relative_path} ({first_line.lstrip('#').strip()})"
         except Exception:
             pass
-        
-        prompt_list.append({"filename": f, "display": title})
-        
+
+        prompt_list.append({"filename": relative_path, "display": title})
+
     return prompt_list
 
 def get_default_room_context() -> dict:
@@ -97,14 +103,19 @@ def get_default_rooms() -> dict:
     return {
         "room_chat": {
             "name": "💬 기본 잡담방",
-            "prompt_files": ["01_persona.md", "02_chat.md"],
+            "prompt_files": ["persona/01_persona_shiki.md", "instructions/01_chat.md"],
             "tools": [CHAT_SCHEMAS[0]],
             "messages": [],
             "context": get_default_room_context()
         },
         "room_agent": {
             "name": "🛠️ 파일 작업방",
-            "prompt_files": ["01_persona.md", "03_files.md", "04_agent_workflow.md"],
+            "prompt_files": [
+                "persona/01_persona_shiki.md",
+                "instructions/01_chat.md",
+                "tools/01_files.md",
+                "workflow/01_files_workflow.md",
+            ],
             "tools": ALL_SCHEMAS,
             "messages": [],
             "context": get_default_room_context()
