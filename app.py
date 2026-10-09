@@ -264,6 +264,12 @@ st.divider()
 
 # 대화 히스토리 출력
 for msg in active_room["messages"]:
+    if msg.get("type") == "tool_result":
+        with st.chat_message("assistant"):
+            with st.expander(f"도구 결과: `{msg['name']}`", expanded=False):
+                st.text(msg["content"])
+        continue
+
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
@@ -308,8 +314,13 @@ if user_input:
                 if event["type"] == "tool_start":
                     status_box.status(f"🛠️ 도구 실행: `{event['name']}`", state="running")
                 elif event["type"] == "tool_end":
+                    active_room["messages"].append({
+                        "type": "tool_result",
+                        "name": event["name"],
+                        "content": event["result"],
+                    })
                     with st.expander(f"도구 결과: `{event['name']}`", expanded=False):
-                        st.json(event["result"])
+                        st.text(event["result"])
                 elif event["type"] == "thinking_chunk":
                     if thinking_status is None:
                         thinking_status = st.status("생각하는 중...", expanded=True)

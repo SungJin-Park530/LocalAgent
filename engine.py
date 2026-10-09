@@ -2,6 +2,7 @@ import os
 import sqlite3
 import time
 import json
+import warnings
 from typing import Annotated, Generator, Literal, TypedDict
 
 from langchain_core.messages import (
@@ -189,9 +190,23 @@ def should_summarize(
     state: AgentState, token_model: ChatOllama
 ) -> Literal["summarize_node", "__end__"]:
     messages = state["messages"]
-    try:
-        token_count = token_model.get_num_tokens_from_messages(messages)
-    except Exception:
+    token_count = None
+    with warnings.catch_warnings(record=True) as token_warnings:
+        warnings.simplefilter("always", UserWarning)
+        try:
+            token_count = token_model.get_num_tokens_from_messages(messages)
+        except Exception:
+            pass
+
+    used_generic_tokenizer = any(
+        "Using fallback GPT-2 tokenizer" in str(warning.message)
+        for warning in token_warnings
+    )
+    for warning in token_warnings:
+        if "Using fallback GPT-2 tokenizer" not in str(warning.message):
+            warnings.warn(warning.message, warning.category, stacklevel=2)
+
+    if token_count is None or used_generic_tokenizer:
         total_chars = sum(
             len(str(getattr(message, "content", "")))
             + len(str(getattr(message, "tool_calls", "")))

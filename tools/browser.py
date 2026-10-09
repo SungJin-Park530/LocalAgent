@@ -7,14 +7,15 @@ import tempfile
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 from langchain_core.tools import tool
-import json
 from urllib.parse import urlsplit, urlunsplit
 
 
 MAX_TITLE_LENGTH = 120
 MAX_URL_LENGTH = 180
 MAX_RESULT_LINE_LENGTH = 360
-MAX_RESULT_LENGTH = 6000
+MAX_RESULT_LENGTH = 12000
+DEFAULT_HISTORY_DAYS = 7
+DEFAULT_HISTORY_LIMIT = 30
 
 
 def _clean_display_text(value: str, max_length: int) -> str:
@@ -58,8 +59,8 @@ def _get_chrome_history_path() -> str:
 
 def _fetch_browser_history(
     keyword: str = "",
-    days: int = 7,
-    limit: int = 15
+    days: int = DEFAULT_HISTORY_DAYS,
+    limit: int = DEFAULT_HISTORY_LIMIT
 ) -> str:
     """
     Chrome 방문 기록을 안전하게 복사하여 검색하고, 
@@ -143,12 +144,18 @@ def _fetch_browser_history(
     return result
 
 @tool
-def search_browser_history(keyword: str = "", days: int = 7, limit: int = 5) -> str:
-    """Chrome 브라우저의 최근 방문 기록을 조회합니다. 
-    사용자가 방문한 웹사이트, 검색했던 페이지 내역이나 특정 URL을 찾을 때 사용합니다."""
+def search_browser_history(
+    keyword: str = "",
+    days: int = DEFAULT_HISTORY_DAYS,
+    limit: int = DEFAULT_HISTORY_LIMIT,
+) -> str:
+    """최근 방문 기록을 조회합니다.
+
+    기간을 지정하지 않으면 최근 7일을 검색합니다. 사용자가 기간을 지정하면
+    days에 해당 일수를 전달합니다. 기본 최대 결과는 최근 30개입니다.
+    """
     # 내부 조회 로직 호출
-    res = _fetch_browser_history(keyword=keyword, days=days, limit=limit)
-    return json.dumps(res, ensure_ascii=False)
+    return _fetch_browser_history(keyword=keyword, days=days, limit=limit)
 
 BROWSER_TOOLS = [
     search_browser_history,
@@ -172,11 +179,11 @@ BROWSER_SCHEMAS = [
                     },
                     "days": {
                         "type": "integer",
-                        "description": "최근 며칠간의 기록을 조회할지 지정 (기본값: 7일)"
+                        "description": "조회 기간(일). 사용자가 기간을 말하지 않으면 7일, 지정하면 해당 일수"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "가져올 최대 결과 개수 (기본값: 15개)"
+                        "description": "가져올 최대 결과 개수 (기본값: 최근 30개)"
                     }
                 },
                 "required": []
