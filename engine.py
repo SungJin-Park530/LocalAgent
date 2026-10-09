@@ -27,9 +27,10 @@ from config.settings import (
     DEFAULT_PROFILE,
     DEFAULT_SUB_PROFILE,
     MODEL_PROFILES,
-    PROMPTS_DIR,
     SYSTEM_PROMPTS_DIR,
 )
+from prompt_loader import assemble_system_prompt
+from room_manager import get_tool_schemas_for_prompt_tools
 from tools import TOOL_REGISTRY
 
 THINKING_SOFT_CAP_CHARS = 4000
@@ -222,8 +223,8 @@ def check_tool_or_summary(
 def run_agent_engine(
     user_message: str,
     history: list,
-    prompt_files: list,
-    tools: list,
+    selected_persona: str | None,
+    selected_tools: list[str],
     profile_key: str = DEFAULT_PROFILE,
     room_context: dict = None,
 ) -> Generator[dict, None, None]:
@@ -243,16 +244,10 @@ def run_agent_engine(
         stop=["<|im_end|>", "<|endoftext|>", "### Human:", "사용자:"],  # 발산 강제 차단
     )
     
-    # 1.5 시스템 프롬프트 로더
-    system_content = ""
-    if prompt_files:
-        for p_file in prompt_files:
-            file_path = os.path.join(PROMPTS_DIR, p_file)
-            if os.path.exists(file_path):
-                with open(file_path, "r", encoding="utf-8") as f:
-                    system_content += f.read() + "\n\n"
+    system_content = assemble_system_prompt(selected_persona, selected_tools)
 
     # 2. 방에 장착된 도구 인스턴스 필터링
+    tools = get_tool_schemas_for_prompt_tools(selected_tools)
     allowed_names = {
         tool_schema.get("function", {}).get("name")
         for tool_schema in tools

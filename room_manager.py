@@ -1,12 +1,18 @@
 # 채팅방 관리자 코드
 import os
 from tools import ALL_SCHEMAS
-from tools.chat_utils import CHAT_SCHEMAS
+from tools.browser import BROWSER_SCHEMAS
+from tools.files import FILES_SCHEMAS
+from tools import TOOL_REGISTRY
 
 PROMPTS_DIR = "prompts"
 
 # UI에 표시할 직관적인 도구 이름과 간단 설명 매핑
 TOOL_DISPLAY_MAP = {
+    "search_browser_history": {
+        "title": "🌐 브라우저 방문 기록",
+        "desc": "Chrome 방문 기록에서 최근 방문한 페이지를 찾습니다."
+    },
     "get_current_time": {
         "title": "⏰ 현재 시간 확인",
         "desc": "현재 날짜, 요일, 시간을 확인합니다."
@@ -36,6 +42,40 @@ TOOL_DISPLAY_MAP = {
         "desc": "탐색 결과를 별도의 텍스트 파일로 내보냅니다."
     }
 }
+
+TOOL_GROUP_SCHEMAS = {
+    "browser": BROWSER_SCHEMAS,
+    "files": FILES_SCHEMAS,
+}
+
+
+def get_available_tool_keys() -> list[str]:
+    available_keys = []
+    for tool_key, schemas in TOOL_GROUP_SCHEMAS.items():
+        if any(
+            schema.get("function", {}).get("name") in TOOL_REGISTRY
+            for schema in schemas
+        ):
+            available_keys.append(tool_key)
+    return available_keys
+
+
+def get_tool_schemas_for_prompt_tools(selected_tools: list[str]) -> list[dict]:
+    schemas_by_name = {
+        schema["function"]["name"]: schema
+        for schema in ALL_SCHEMAS
+        if schema.get("function", {}).get("name")
+    }
+    selected_schemas = [schemas_by_name["get_current_time"]]
+    included_names = {"get_current_time"}
+
+    for tool_key in selected_tools:
+        for schema in TOOL_GROUP_SCHEMAS.get(tool_key, []):
+            name = schema.get("function", {}).get("name")
+            if name and name not in included_names:
+                selected_schemas.append(schema)
+                included_names.add(name)
+    return selected_schemas
 
 def get_available_tool_groups() -> dict:
     tools_map = {}
@@ -103,20 +143,17 @@ def get_default_rooms() -> dict:
     return {
         "room_chat": {
             "name": "💬 기본 잡담방",
-            "prompt_files": ["persona/01_persona_shiki.md", "instructions/01_chat.md"],
-            "tools": [CHAT_SCHEMAS[0]],
+            "persona": "shiki",
+            "selected_tools": [],
+            "tools": get_tool_schemas_for_prompt_tools([]),
             "messages": [],
             "context": get_default_room_context()
         },
         "room_agent": {
             "name": "🛠️ 파일 작업방",
-            "prompt_files": [
-                "persona/01_persona_shiki.md",
-                "instructions/01_chat.md",
-                "tools/01_files.md",
-                "workflow/01_files_workflow.md",
-            ],
-            "tools": ALL_SCHEMAS,
+            "persona": "shiki",
+            "selected_tools": ["files"],
+            "tools": get_tool_schemas_for_prompt_tools(["files"]),
             "messages": [],
             "context": get_default_room_context()
         }

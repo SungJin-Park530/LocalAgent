@@ -4,7 +4,12 @@ import uuid
 import streamlit as st
 from config.settings import MODEL_PROFILES, DEFAULT_PROFILE
 from engine import run_agent_engine
-from room_manager import get_available_prompts, get_available_tool_groups, get_default_rooms
+from prompt_loader import get_available_personas
+from room_manager import (
+    get_available_tool_keys,
+    get_default_rooms,
+    get_tool_schemas_for_prompt_tools,
+)
 
 st.set_page_config(page_title="로컬 에이전트 인터페이스", layout="wide")
 
@@ -29,55 +34,40 @@ if "active_room_id" not in st.session_state or st.session_state.active_room_id n
 # ==========================================
 @st.dialog("➕ 새 채팅방 만들기")
 def create_room_dialog():
-    available_prompts = get_available_prompts()
-    available_tools = get_available_tool_groups()
-
     room_name = st.text_input("방 이름", placeholder="예: 만화 수다방, 코드 리뷰방")
-
-    # 1. 프롬프트 선택 (기본값: 페르소나)
-    prompt_options = {p["filename"]: p["display"] for p in available_prompts}
-    selected_prompts = st.multiselect(
-        "적용할 시스템 프롬프트",
-        options=list(prompt_options.keys()),
-        default=[
-            path
-            for path in ("persona/01_persona_shiki.md", "instructions/01_chat.md")
-            if path in prompt_options
-        ],
-        format_func=lambda x: prompt_options.get(x, x)
+    personas = get_available_personas()
+    persona_labels = {persona["key"]: persona["display"] for persona in personas}
+    no_persona = "선택 안 함 (중립 톤)"
+    persona_options = [no_persona, *persona_labels]
+    selected_persona_option = st.selectbox(
+        "페르소나",
+        options=persona_options,
+        format_func=lambda key: no_persona if key == no_persona else persona_labels[key],
+        key="new_room_persona",
     )
-
-    # 2. 도구 선택 (기본값: 현재 시간 확인 도구)
-    tool_keys = list(available_tools.keys())
-    default_tools = ["get_current_time"] if "get_current_time" in tool_keys else []
-    
-    selected_tool_names = st.multiselect(
-        "부여할 도구",
-        options=tool_keys,
-        default=default_tools,
-        format_func=lambda k: available_tools[k]["display"]
+    selected_tools = st.multiselect(
+        "작업 도구",
+        options=get_available_tool_keys(),
+        key="new_room_prompt_tools",
     )
 
     col1, col2 = st.columns(2)
     col1, col2 = st.columns(2)
     with col1:
         if st.button("생성하기", type="primary", use_container_width=True):
-            # [유효성 검사 3종]
             if not room_name.strip():
                 st.error("방 이름을 입력해주세요.")
-            elif not selected_prompts:
-                st.error("최소 1개 이상의 시스템 프롬프트를 선택해주세요.")
-            elif not selected_tool_names:
-                st.error("안정적인 응답 생성을 위해 최소 1개 이상의 도구를 선택해주세요.")
             else:
-                # 모든 검증을 통과했을 때만 생성 진행
                 new_room_id = f"room_{uuid.uuid4().hex[:8]}"
-                selected_schemas = [available_tools[k]["schema"] for k in selected_tool_names]
-
+                persona = (
+                    None if selected_persona_option == no_persona
+                    else selected_persona_option
+                )
                 st.session_state.rooms[new_room_id] = {
                     "name": room_name.strip(),
-                    "prompt_files": selected_prompts,
-                    "tools": selected_schemas,
+                    "persona": persona,
+                    "selected_tools": selected_tools,
+                    "tools": get_tool_schemas_for_prompt_tools(selected_tools),
                     "messages": []
                 }
                 st.session_state.active_room_id = new_room_id
@@ -217,16 +207,41 @@ with col_title:
 with col_settings:
     with st.popover("⚙️ 방 설정", use_container_width=True):
         st.markdown(f"#### ⚙️ `{active_room['name']}` 상세")
-        st.caption("현재 적용된 시스템 프롬프트 및 도구 설정입니다. (읽기 전용)")
+        st.caption("이 방의 페르소나와 작업 도구를 설정합니다.")
         st.divider()
 
-        # 프롬프트 목록 표시
-        st.markdown("**📄 적용된 프롬프트**")
-        if active_room["prompt_files"]:
-            for p_file in active_room["prompt_files"]:
-                st.markdown(f"- `{p_file}`")
-        else:
-            st.caption("설정된 프롬프트가 없습니다.")
+        personas = get_available_personas()
+        persona_labels = {persona["key"]: persona["display"] for persona in personas}
+        no_persona = "선택 안 함 (중립 톤)"
+        persona_options = [no_persona, *persona_labels]
+        current_persona = active_room.get("persona")
+        if current_persona not in persona_labels:
+            current_persona = no_persona
+        selected_persona_option = st.selectbox(
+            "페르소나",
+            options=persona_options,
+            index=persona_options.index(current_persona),
+            format_func=lambda key: no_persona if key == no_persona else persona_labels[key],
+            disabled=st.session_state.is_generating,
+            key=f"persona_{st.session_state.active_room_id}",
+        )
+        selected_tool_keys = get_available_tool_keys()
+        selected_tools = st.multiselect(
+            "작업 도구",
+            options=selected_tool_keys,
+            default=[
+                key for key in active_room.get("selected_tools", [])
+                if key in selected_tool_keys
+            ],
+            disabled=st.session_state.is_generating,
+            key=f"tools_{st.session_state.active_room_id}",
+        )
+        active_room["persona"] = (
+            None if selected_persona_option == no_persona
+            else selected_persona_option
+        )
+        active_room["selected_tools"] = selected_tools
+        active_room["tools"] = get_tool_schemas_for_prompt_tools(selected_tools)
 
         st.divider()
 
@@ -283,8 +298,8 @@ if user_input:
             generator = run_agent_engine(
                 user_message=user_input,
                 history=active_room["messages"][:-1],
-                prompt_files=active_room["prompt_files"],
-                tools=active_room["tools"],
+                selected_persona=active_room.get("persona"),
+                selected_tools=active_room.get("selected_tools", []),
                 profile_key=selected_model_key,
                 room_context=room_context  # <-- context 전달
             )
