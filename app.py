@@ -7,7 +7,8 @@ from engine import run_agent_engine
 from prompt_loader import get_available_personas
 from room_manager import (
     get_available_tool_keys,
-    get_default_rooms,
+    load_room_state,
+    save_room_state,
     get_tool_schemas_for_prompt_tools,
 )
 
@@ -17,7 +18,9 @@ st.set_page_config(page_title="로컬 에이전트 인터페이스", layout="wid
 # 1. 세션 상태 초기화
 # ==========================================
 if "rooms" not in st.session_state:
-    st.session_state.rooms = get_default_rooms()
+    restored_state = load_room_state()
+    st.session_state.rooms = restored_state["rooms"]
+    st.session_state.active_room_id = restored_state["active_room_id"]
 
 if "is_generating" not in st.session_state:
     st.session_state.is_generating = False
@@ -65,12 +68,18 @@ def create_room_dialog():
                 )
                 st.session_state.rooms[new_room_id] = {
                     "name": room_name.strip(),
+                    "thread_id": new_room_id,
                     "persona": persona,
                     "selected_tools": selected_tools,
                     "tools": get_tool_schemas_for_prompt_tools(selected_tools),
-                    "messages": []
+                    "messages": [],
+                    "context": {},
                 }
                 st.session_state.active_room_id = new_room_id
+                save_room_state(
+                    st.session_state.rooms,
+                    st.session_state.active_room_id,
+                )
                 st.rerun()
 
     with col2:
@@ -87,6 +96,10 @@ def confirm_clear_dialog(room_id: str):
     with col1:
         if st.button("삭제 확인", type="primary", use_container_width=True):
             st.session_state.rooms[room_id]["messages"] = []
+            save_room_state(
+                st.session_state.rooms,
+                st.session_state.active_room_id,
+            )
             st.rerun()
     with col2:
         if st.button("취소", use_container_width=True):
@@ -107,7 +120,10 @@ def confirm_delete_room_dialog(room_id: str):
             # 2. 남은 방 포인터 재조정
             remaining_keys = list(st.session_state.rooms.keys())
             st.session_state.active_room_id = remaining_keys[0] if remaining_keys else None
-            
+            save_room_state(
+                st.session_state.rooms,
+                st.session_state.active_room_id,
+            )
             st.rerun()
             
     with col2:
@@ -145,6 +161,10 @@ with st.sidebar:
 
         if selected_room != st.session_state.active_room_id:
             st.session_state.active_room_id = selected_room
+            save_room_state(
+                st.session_state.rooms,
+                st.session_state.active_room_id,
+            )
             st.rerun()
 
         st.divider()
@@ -242,6 +262,11 @@ with col_settings:
         )
         active_room["selected_tools"] = selected_tools
         active_room["tools"] = get_tool_schemas_for_prompt_tools(selected_tools)
+        active_room.setdefault("thread_id", st.session_state.active_room_id)
+        save_room_state(
+            st.session_state.rooms,
+            st.session_state.active_room_id,
+        )
 
         st.divider()
 
@@ -348,7 +373,9 @@ if user_input:
         try:
             # 컨텍스트 객체 확보 (키가 없을 경우 빈 딕셔너리로 초기화)
             room_context = active_room.setdefault("context", {})
-            room_context["room_id"] = st.session_state.active_room_id
+            room_context["room_id"] = active_room.get(
+                "thread_id", st.session_state.active_room_id
+            )
 
             generator = run_agent_engine(
                 user_message=user_input,
@@ -393,6 +420,10 @@ if user_input:
                     )
         finally:
             st.session_state.is_generating = False
+            save_room_state(
+                st.session_state.rooms,
+                st.session_state.active_room_id,
+            )
 
     # 3. 완료 후 화면 리셋
     st.rerun()

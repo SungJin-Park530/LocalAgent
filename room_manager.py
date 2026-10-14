@@ -1,11 +1,15 @@
 # 채팅방 관리자 코드
+import json
 import os
+import tempfile
 from tools import ALL_SCHEMAS
 from tools.browser import BROWSER_SCHEMAS
 from tools.files import FILES_SCHEMAS
 from tools import TOOL_REGISTRY
+from config.settings import BASE_DIR
 
 PROMPTS_DIR = "prompts"
+ROOM_STATE_PATH = os.path.join(BASE_DIR, "data", "rooms.json")
 
 # UI에 표시할 직관적인 도구 이름과 간단 설명 매핑
 TOOL_DISPLAY_MAP = {
@@ -143,6 +147,7 @@ def get_default_rooms() -> dict:
     return {
         "room_chat": {
             "name": "💬 기본 잡담방",
+            "thread_id": "room_chat",
             "persona": "shiki",
             "selected_tools": [],
             "tools": get_tool_schemas_for_prompt_tools([]),
@@ -151,6 +156,7 @@ def get_default_rooms() -> dict:
         },
         "room_agent": {
             "name": "🛠️ 파일 작업방",
+            "thread_id": "room_agent",
             "persona": "shiki",
             "selected_tools": ["files"],
             "tools": get_tool_schemas_for_prompt_tools(["files"]),
@@ -158,3 +164,87 @@ def get_default_rooms() -> dict:
             "context": get_default_room_context()
         }
     }
+
+
+def _normalize_room(room_id: str, room: dict) -> dict:
+    selected_tools = [
+        key for key in room.get("selected_tools", [])
+        if isinstance(key, str) and key in TOOL_GROUP_SCHEMAS
+    ]
+    messages = room.get("messages", [])
+    context = room.get("context", {})
+    return {
+        "name": str(room.get("name") or room_id),
+        "thread_id": str(room.get("thread_id") or room_id),
+        "persona": room.get("persona"),
+        "selected_tools": selected_tools,
+        "tools": get_tool_schemas_for_prompt_tools(selected_tools),
+        "messages": messages if isinstance(messages, list) else [],
+        "context": context if isinstance(context, dict) else get_default_room_context(),
+    }
+
+
+def load_room_state(path: str = ROOM_STATE_PATH) -> dict:
+    """Load saved rooms, then add only default rooms missing from storage."""
+    saved_state = {}
+    try:
+        with open(path, "r", encoding="utf-8") as state_file:
+            raw_state = json.load(state_file)
+        if isinstance(raw_state, dict) and isinstance(raw_state.get("rooms"), dict):
+            saved_state = raw_state
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        print(f"[Rooms] Saved room state unavailable; using defaults: {error}")
+
+    defaults = get_default_rooms()
+    saved_rooms = saved_state.get("rooms", {})
+    rooms = {
+        room_id: _normalize_room(room_id, room)
+        for room_id, room in saved_rooms.items()
+        if isinstance(room_id, str) and isinstance(room, dict)
+    }
+    for room_id, default_room in defaults.items():
+        if room_id not in rooms:
+            rooms[room_id] = _normalize_room(room_id, default_room)
+
+    active_room_id = saved_state.get("active_room_id")
+    if active_room_id not in rooms:
+        active_room_id = next(iter(rooms), None)
+    return {"rooms": rooms, "active_room_id": active_room_id}
+
+
+def save_room_state(
+    rooms: dict,
+    active_room_id: str | None,
+    path: str = ROOM_STATE_PATH,
+) -> None:
+    """Persist room metadata and UI messages using an atomic UTF-8 JSON write."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        "version": 1,
+        "active_room_id": active_room_id,
+        "rooms": {
+            room_id: _normalize_room(room_id, room)
+            for room_id, room in rooms.items()
+            if isinstance(room_id, str) and isinstance(room, dict)
+        },
+    }
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=os.path.dirname(path),
+            prefix="rooms_",
+            suffix=".tmp",
+            delete=False,
+        ) as state_file:
+            temporary_path = state_file.name
+            json.dump(payload, state_file, ensure_ascii=False, indent=2)
+            state_file.flush()
+            os.fsync(state_file.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
