@@ -271,7 +271,24 @@ for msg in active_room["messages"]:
         continue
 
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        blocks = msg.get("blocks")
+        if msg["role"] == "assistant" and isinstance(blocks, list):
+            for block in blocks:
+                block_type = block.get("type")
+                if block_type == "think":
+                    with st.expander("💭 추론 과정", expanded=False):
+                        st.markdown(block.get("content", ""))
+                elif block_type == "tool":
+                    tool_name = block.get("name", "도구")
+                    with st.expander(f"🛠️ 도구 실행: `{tool_name}`", expanded=False):
+                        if block.get("args"):
+                            st.json(block["args"])
+                        if block.get("result"):
+                            st.text(block["result"])
+                elif block_type == "text":
+                    st.markdown(block.get("content", ""))
+        else:
+            st.markdown(msg.get("content", ""))
 
 # 입력 인터페이스
 user_input = st.chat_input(
@@ -289,12 +306,44 @@ if user_input:
 
     # 2. 모델 응답 스트림 수신
     with st.chat_message("assistant"):
-        status_box = st.empty()
-        thinking_status = None
-        thinking_placeholder = None
-        thinking_response = ""
-        response_placeholder = st.empty()
-        full_response = ""
+        assistant_message = {"role": "assistant", "blocks": []}
+        active_room["messages"].append(assistant_message)
+        render_state = {
+            "type": None,
+            "block": None,
+            "placeholder": None,
+            "tool_result_placeholder": None,
+        }
+
+        def begin_block(block_type: str, block: dict) -> None:
+            assistant_message["blocks"].append(block)
+            render_state["type"] = block_type
+            render_state["block"] = block
+            render_state["placeholder"] = None
+            render_state["tool_result_placeholder"] = None
+
+            if block_type == "think":
+                with st.expander("💭 추론 과정", expanded=True):
+                    render_state["placeholder"] = st.empty()
+            elif block_type == "text":
+                render_state["placeholder"] = st.empty()
+            elif block_type == "tool":
+                tool_name = block.get("name", "도구")
+                with st.expander(f"🛠️ 도구 실행: `{tool_name}`", expanded=True):
+                    if block.get("args"):
+                        st.json(block["args"])
+                    render_state["tool_result_placeholder"] = st.empty()
+
+        def append_stream_text(block_type: str, content: str) -> None:
+            if not content:
+                return
+            if render_state["type"] != block_type:
+                begin_block(block_type, {"type": block_type, "content": content})
+            else:
+                render_state["block"]["content"] += content
+            render_state["placeholder"].markdown(
+                render_state["block"]["content"]
+            )
 
         try:
             # 컨텍스트 객체 확보 (키가 없을 경우 빈 딕셔너리로 초기화)
@@ -311,46 +360,39 @@ if user_input:
             )
 
             for event in generator:
-                if event["type"] == "tool_start":
-                    status_box.status(f"🛠️ 도구 실행: `{event['name']}`", state="running")
-                elif event["type"] == "tool_end":
-                    active_room["messages"].append({
-                        "type": "tool_result",
+                event_type = event["type"]
+                if event_type == "tool_start":
+                    begin_block("tool", {
+                        "type": "tool",
                         "name": event["name"],
-                        "content": event["result"],
+                        "args": event.get("args", {}),
+                        "result": "",
                     })
-                    with st.expander(f"도구 결과: `{event['name']}`", expanded=False):
-                        st.text(event["result"])
-                elif event["type"] == "thinking_chunk":
-                    if thinking_status is None:
-                        thinking_status = st.status("생각하는 중...", expanded=True)
-                        thinking_placeholder = thinking_status.empty()
-                    thinking_response += event["content"]
-                    thinking_placeholder.markdown(thinking_response)
-                elif event["type"] == "thinking_limit_reached":
-                    if thinking_status is not None:
-                        thinking_status.update(
-                            label="추론 상한 도달",
-                            state="complete",
-                            expanded=False,
-                        )
-                    st.warning(event["content"].strip())
-                elif event["type"] == "text_chunk":
-                    if thinking_status is not None:
-                        thinking_status.update(
-                            label="추론 완료",
-                            state="complete",
-                            expanded=False,
-                        )
-                        thinking_status = None
-                    full_response += event["content"]
-                    response_placeholder.markdown(full_response)
+                elif event["type"] == "tool_end":
+                    current_block = render_state["block"]
+                    if (
+                        render_state["type"] != "tool"
+                        or current_block.get("name") != event["name"]
+                    ):
+                        begin_block("tool", {
+                            "type": "tool",
+                            "name": event["name"],
+                            "args": {},
+                            "result": "",
+                        })
+                    current_block = render_state["block"]
+                    current_block["result"] = event["result"]
+                    render_state["tool_result_placeholder"].text(event["result"])
+                elif event_type in {"think", "thinking_chunk"}:
+                    append_stream_text("think", event["content"])
+                elif event_type in {"text", "text_chunk"}:
+                    append_stream_text("text", event["content"])
+                elif event_type == "thinking_limit_reached":
+                    append_stream_text(
+                        "think", f"\n\n[{event['content'].strip()}]"
+                    )
         finally:
             st.session_state.is_generating = False
 
-        status_box.empty()
-
-    # 3. 완료 후 히스토리 반영 및 화면 리셋
-    if full_response:
-        active_room["messages"].append({"role": "assistant", "content": full_response})
+    # 3. 완료 후 화면 리셋
     st.rerun()

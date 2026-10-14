@@ -13,11 +13,13 @@ from langchain_core.messages import (
     ToolMessage,
     message_chunk_to_message,
 )
+from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 from langgraph.prebuilt import ToolNode
+from ollama import ResponseError
 
 # ---------------------------------------------------------
 # 1. 설정 및 저장소 경로 초기화
@@ -32,7 +34,7 @@ from config.settings import (
 )
 from prompt_loader import assemble_system_prompt
 from room_manager import get_tool_schemas_for_prompt_tools
-from tools import TOOL_REGISTRY
+from tools import CHAT_TOOLS, TOOL_REGISTRY
 
 THINKING_SOFT_CAP_CHARS = 4000
 
@@ -99,8 +101,13 @@ def agent_node(
         "weather": "get_current_weather",
     }
     routed_tool_name = route_tool_names.get(route)
+    utility_tool_names = {tool.name for tool in CHAT_TOOLS}
     target_tools = (
-        [t for t in active_tool_instances if t.name == routed_tool_name]
+        [
+            tool
+            for tool in active_tool_instances
+            if tool.name == routed_tool_name or tool.name in utility_tool_names
+        ]
         if routed_tool_name
         else active_tool_instances
     )
@@ -111,9 +118,10 @@ def agent_node(
         [SystemMessage(content=system_prompt)] if system_prompt else []
     ) + state["messages"]
 
-    def stream_response(messages: list) -> AIMessage:
+    def stream_response(messages: list, runner=None) -> AIMessage:
         response_chunk = None
-        for chunk in llm_runner.stream(messages):
+        active_runner = runner or llm_runner
+        for chunk in active_runner.stream(messages):
             response_chunk = (
                 chunk if response_chunk is None else response_chunk + chunk
             )
@@ -121,7 +129,17 @@ def agent_node(
             return AIMessage(content="")
         return message_chunk_to_message(response_chunk)
 
-    response = stream_response(full_messages)
+    try:
+        response = stream_response(full_messages)
+    except ResponseError as error:
+        if not target_tools or "xml syntax error" not in str(error).lower():
+            raise
+
+        print(f"[도구 호출 복구] Ollama의 도구 호출 형식 오류: {error}")
+        fallback_messages = full_messages + [
+            SystemMessage(content="이번 응답에서는 도구를 호출하지 말고 텍스트로만 답하세요.")
+        ]
+        response = stream_response(fallback_messages, runner=main_llm)
 
     if not response.tool_calls and not response.content.strip():
         retry_messages = full_messages + [
@@ -232,6 +250,20 @@ def check_tool_or_summary(
     return should_summarize(state, token_model)
 
 
+def with_node_logging(node_name: str, node_function):
+    def logged_node(state: AgentState) -> dict:
+        print(f"[Node: {node_name}] enter", flush=True)
+        try:
+            result = node_function(state)
+        except Exception as error:
+            print(f"[Node: {node_name}] failed: {error}", flush=True)
+            raise
+        print(f"[Node: {node_name}] exit", flush=True)
+        return result
+
+    return logged_node
+
+
 # ---------------------------------------------------------
 # 5. UI 호환 메인 러너 함수 (app.py 인터페이스 완벽 대응)
 # ---------------------------------------------------------
@@ -267,6 +299,7 @@ def run_agent_engine(
         tool_schema.get("function", {}).get("name")
         for tool_schema in tools
     }
+    allowed_names.update(tool.name for tool in CHAT_TOOLS)
     active_tools = [
         TOOL_REGISTRY[name]
         for name in allowed_names
@@ -275,18 +308,40 @@ def run_agent_engine(
 
     # 3. 동적 그래프 빌드
     builder = StateGraph(AgentState)
-    builder.add_node("router", router_node)
+    builder.add_node("router", with_node_logging("router", router_node))
     builder.add_node(
         "agent",
-        lambda s: agent_node(
-            s, 
-            main_llm=main_llm, 
-            active_tool_instances=active_tools, 
-            system_prompt=system_content.strip()
+        with_node_logging(
+            "agent",
+            lambda s: agent_node(
+                s,
+                main_llm=main_llm,
+                active_tool_instances=active_tools,
+                system_prompt=system_content.strip(),
+            ),
         ),
     )
-    builder.add_node("tools", ToolNode(active_tools))
-    builder.add_node("summarize_node", summarize_node)
+    tool_executor = ToolNode(active_tools)
+
+    def logged_tools_node(state: AgentState, config: RunnableConfig) -> dict:
+        last_message = state["messages"][-1]
+        tool_names = ", ".join(
+            call["name"] for call in getattr(last_message, "tool_calls", [])
+        ) or "unknown"
+        node_label = f"tools - {tool_names}"
+        print(f"[Node: {node_label}] enter", flush=True)
+        try:
+            result = tool_executor.invoke(state, config=config)
+        except Exception as error:
+            print(f"[Node: {node_label}] failed: {error}", flush=True)
+            raise
+        print(f"[Node: {node_label}] exit", flush=True)
+        return result
+
+    builder.add_node("tools", logged_tools_node)
+    builder.add_node(
+        "summarize_node", with_node_logging("summarize_node", summarize_node)
+    )
     
     # 1) 시작 진입점(Entrypoint) 연결 -> 에러 해결 핵심
     builder.add_edge(START, "router")
@@ -319,17 +374,26 @@ def run_agent_engine(
         else "room_default"
     )
 
-    conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
+    print("[Checkpoint] SQLite connection started", flush=True)
+    conn = sqlite3.connect(
+        CHECKPOINT_DB_PATH, check_same_thread=False, timeout=5.0
+    )
+    conn.execute("PRAGMA busy_timeout = 5000")
     memory = SqliteSaver(conn)
     graph = builder.compile(checkpointer=memory)
+    print("[Checkpoint] SQLite connected; graph compiled", flush=True)
 
-    config = {"configurable": {"thread_id": room_id}}
+    config = {
+        "configurable": {"thread_id": room_id},
+        "recursion_limit": 20,
+    }
 
     # 시스템 프롬프트 및 사용자 메시지 조립
     # (필요시 prompt_files 내용을 읽어 SystemMessage로 결합 가능)
     input_messages = [HumanMessage(content=user_message)]
 
     try:
+        print("[Graph] stream creation started", flush=True)
         events = graph.stream(
             {"messages": input_messages},
             config=config,
@@ -346,14 +410,14 @@ def run_agent_engine(
             if not content:
                 return []
             if not in_thinking or thinking_limit_reached:
-                return [{"type": "text_chunk", "content": content}]
+                return [{"type": "text", "content": content}]
 
             remaining = THINKING_SOFT_CAP_CHARS - thinking_chars_count
             thinking_part = content[:remaining]
             events_out = []
             if thinking_part:
                 thinking_chars_count += len(thinking_part)
-                events_out.append({"type": "thinking_chunk", "content": thinking_part})
+                events_out.append({"type": "think", "content": thinking_part})
 
             overflow = content[len(thinking_part):]
             if overflow:
@@ -363,7 +427,27 @@ def run_agent_engine(
                     "type": "thinking_limit_reached",
                     "content": "\n[추론 상한 도달: 답변 전환]\n",
                 })
-                events_out.append({"type": "text_chunk", "content": overflow})
+                events_out.append({"type": "text", "content": overflow})
+            return events_out
+
+        def emit_reasoning(content: object) -> list[dict]:
+            if not isinstance(content, str) or not content:
+                return []
+            nonlocal thinking_chars_count, thinking_limit_reached
+            if thinking_limit_reached:
+                return []
+            remaining = THINKING_SOFT_CAP_CHARS - thinking_chars_count
+            reasoning_part = content[:remaining]
+            events_out = []
+            if reasoning_part:
+                thinking_chars_count += len(reasoning_part)
+                events_out.append({"type": "think", "content": reasoning_part})
+            if len(content) > len(reasoning_part):
+                thinking_limit_reached = True
+                events_out.append({
+                    "type": "thinking_limit_reached",
+                    "content": "추론 출력 상한에 도달했습니다.",
+                })
             return events_out
 
         def consume_text(content: str, flush: bool = False) -> list[dict]:
@@ -413,26 +497,55 @@ def run_agent_engine(
 
             return emitted
 
+        print("[Graph] stream event iteration started", flush=True)
         for mode, payload in events:
             if mode == "messages":
                 chunk, metadata = payload
                 if metadata.get("langgraph_node") != "agent":
                     continue
+
+                additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+                reasoning_content = (
+                    getattr(chunk, "reasoning_content", None)
+                    or getattr(chunk, "thinking", None)
+                    or additional_kwargs.get("reasoning_content")
+                    or additional_kwargs.get("thinking")
+                )
+                for stream_event in emit_reasoning(reasoning_content):
+                    yield stream_event
+
                 token = chunk.content
                 if isinstance(token, str):
                     for stream_event in consume_text(token):
                         yield stream_event
                 elif isinstance(token, list):
                     for block in token:
-                        if isinstance(block, dict) and isinstance(block.get("text"), str):
-                            for stream_event in consume_text(block["text"]):
+                        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                            continue
+                        block_type = str(block.get("type", "")).lower()
+                        if block_type in {"thinking", "reasoning", "reasoning_content"}:
+                            block_events = emit_reasoning(block["text"])
+                        else:
+                            block_events = consume_text(block["text"])
+                        for stream_event in block_events:
                                 yield stream_event
 
             elif mode == "updates":
+                print(
+                    f"[Graph] node update: {', '.join(payload.keys())}",
+                    flush=True,
+                )
                 if "agent" in payload:
+                    for stream_event in consume_text("", flush=True):
+                        yield stream_event
+                    in_thinking = False
                     msg = payload["agent"]["messages"][-1]
                     for tool_call in getattr(msg, "tool_calls", []):
-                        yield {"type": "tool_start", "name": tool_call["name"]}
+                        yield {
+                            "type": "tool_start",
+                            "name": tool_call["name"],
+                            "args": tool_call.get("args", {}),
+                        }
                 elif "tools" in payload:
                     for tool_msg in payload["tools"]["messages"]:
                         yield {
@@ -443,6 +556,12 @@ def run_agent_engine(
 
         for stream_event in consume_text("", flush=True):
             yield stream_event
+        print("[Graph] stream completed", flush=True)
+
+    except Exception as error:
+        print(f"[Graph] stream failed: {error}", flush=True)
+        raise
 
     finally:
+        print("[Checkpoint] SQLite connection closing", flush=True)
         conn.close()
