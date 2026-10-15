@@ -16,9 +16,6 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 # 검색 캐시 파일 경로
 CACHE_FILE_PATH = os.path.join(CACHE_DIR, "search_cache.json")
 
-# 파일 내보내기 경로
-DEFAULT_EXPORT_PATH = os.path.join(EXPORT_DIR, "search_result.txt")
-
 # 프롬프트 디렉터리 경로
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
 SYSTEM_PROMPTS_DIR = os.path.join(PROMPTS_DIR, "system")

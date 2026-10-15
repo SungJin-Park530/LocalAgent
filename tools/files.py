@@ -522,7 +522,7 @@ FILES_SCHEMAS = [
                     "keyword": {"type": "string", "description": "파일명 또는 폴더명 검색어"},
                     "category": {
                         "type": "string",
-                        "enum": ["video", "audio", "image", "document"],
+                        "enum": list(FILE_CATEGORIES),
                         "description": "파일 종류 필터"
                     },
                     "min_size_mb": {"type": "number", "description": "최소 파일 크기 (MB 단위)"},

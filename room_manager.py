@@ -2,7 +2,6 @@
 import json
 import os
 import tempfile
-from tools import ALL_SCHEMAS
 from tools.browser import BROWSER_SCHEMAS
 from tools.files import FILES_SCHEMAS
 from tools import TOOL_REGISTRY
@@ -10,42 +9,6 @@ from config.settings import BASE_DIR
 
 PROMPTS_DIR = "prompts"
 ROOM_STATE_PATH = os.path.join(BASE_DIR, "data", "rooms.json")
-
-# UI에 표시할 직관적인 도구 이름과 간단 설명 매핑
-TOOL_DISPLAY_MAP = {
-    "search_browser_history": {
-        "title": "🌐 브라우저 방문 기록",
-        "desc": "Chrome 방문 기록에서 최근 방문한 페이지를 찾습니다."
-    },
-    "get_current_time": {
-        "title": "⏰ 현재 시간 확인",
-        "desc": "현재 날짜, 요일, 시간을 확인합니다."
-    },
-    "get_current_weather": {
-        "title": "🌤️ 현재 날씨 조회",
-        "desc": "특정 도시나 현재 지역의 날씨와 기온을 조회합니다."
-    },
-    "list_directory": {
-        "title": "📂 폴더 목록 조회",
-        "desc": "지정한 경로 내 파일과 하위 폴더 목록을 확인합니다."
-    },
-    "search_files": {
-        "title": "🔍 파일/폴더 검색",
-        "desc": "키워드로 특정 파일이나 폴더를 탐색합니다."
-    },
-    "read_file": {
-        "title": "📄 파일 내용 읽기",
-        "desc": "텍스트 파일의 내용을 읽어옵니다."
-    },
-    "write_file": {
-        "title": "✏️ 새 파일 작성/수정",
-        "desc": "지정한 경로에 텍스트 파일을 새로 작성하거나 덮어씁니다."
-    },
-    "export_search_results_to_file": {
-        "title": "💾 검색 결과 파일 저장",
-        "desc": "탐색 결과를 별도의 텍스트 파일로 내보냅니다."
-    }
-}
 
 TOOL_GROUP_SCHEMAS = {
     "browser": BROWSER_SCHEMAS,
@@ -80,25 +43,6 @@ def get_tool_schemas_for_prompt_tools(selected_tools: list[str]) -> list[dict]:
                 selected_schemas.append(schema)
                 included_names.add(name)
     return selected_schemas
-
-def get_available_tool_groups() -> dict:
-    tools_map = {}
-    for schema in ALL_SCHEMAS:
-        func = schema.get("function", {})
-        func_name = func.get("name")
-        if not func_name:
-            continue
-
-        meta = TOOL_DISPLAY_MAP.get(func_name, {})
-        display_title = meta.get("title", func_name)
-        display_desc = meta.get("desc", func.get("description", ""))
-
-        tools_map[func_name] = {
-            "display": f"{display_title} | {display_desc}",
-            "short_title": display_title,
-            "schema": schema
-        }
-    return tools_map
 
 def get_available_prompts(prompts_dir: str = PROMPTS_DIR) -> list[dict]:
     """
