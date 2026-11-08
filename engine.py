@@ -44,6 +44,21 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CHECKPOINT_DB_PATH = os.path.join(DATA_DIR, "chat_checkpoints.db")
 
 
+def delete_room_checkpoint(
+    thread_id: str,
+    db_path: str = CHECKPOINT_DB_PATH,
+) -> None:
+    if not thread_id or not os.path.isfile(db_path):
+        return
+
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        SqliteSaver(conn).delete_thread(thread_id)
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------
 # 3. 모델 및 상태(State) 정의
 # ---------------------------------------------------------

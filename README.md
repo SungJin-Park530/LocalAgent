@@ -120,8 +120,10 @@ LocalAgent/
 ├── search_result/             # 검색 결과 내보내기
 ├── progress/                  # 작업 기록, 트러블슈팅, 모델 검증 기록
 ├── legacy/                    # 이전 구현 파일
-├── test_graph.py              # 그래프 동작 확인 스크립트
-├── test_ollama.py             # Ollama 모델 확인 스크립트
+├── tests/
+│   ├── test_cleanup_regressions.py # 회귀 테스트
+│   ├── test_graph.py               # 그래프 동작 확인 스크립트
+│   └── test_ollama.py              # Ollama 모델 확인 스크립트
 └── requirements.txt
 ```
 

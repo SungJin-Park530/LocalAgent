@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+from tools import ALL_SCHEMAS
 from tools.browser import BROWSER_SCHEMAS
 from tools.files import FILES_SCHEMAS
 from tools import TOOL_REGISTRY

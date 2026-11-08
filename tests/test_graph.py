@@ -76,12 +76,12 @@ def route_decision(state: AgentState) -> Literal["chat_node", "browser_agent_nod
 def summarize_node(state: AgentState) -> dict:
     print("\n[요약 노드 (1.5B) 가동] 메시지가 기준치를 초과하여 이전 대화를 압축합니다...")
     t_start = time.perf_counter()
-    
+
     existing_summary = state.get("summary", "")
-    
+
     # 최근 2개 메시지(방금 답변과 직전 질문)를 제외한 오래된 메시지들만 요약 대상으로 선정
     messages_to_summarize = state["messages"][:-2]
-    
+
     dialogue_lines = []
     for msg in messages_to_summarize:
         role = "사용자" if isinstance(msg, HumanMessage) else "어시스턴트"
@@ -97,16 +97,16 @@ def summarize_node(state: AgentState) -> dict:
             )
         )
     ]
-    
+
     res = summarizer_llm.invoke(summary_prompt)
     new_summary = res.content.strip()
-    
+
     # 요약된 오래된 메시지들은 장부에서 제거하여 토큰 절약 (RemoveMessage)
     delete_actions = [RemoveMessage(id=m.id) for m in messages_to_summarize if hasattr(m, "id") and m.id]
-    
+
     elapsed = time.perf_counter() - t_start
     print(f"[요약 노드] 완료 ({elapsed:.2f}초 소요)\n새 요약본: {new_summary}")
-    
+
     return {
         "summary": new_summary,
         "messages": delete_actions

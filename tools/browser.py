@@ -1,12 +1,12 @@
 # 브라우저 방문 기록 조회 도구
 
+import ipaddress
 import os
-import shutil
 import sqlite3
-import tempfile
 import time as time_module
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, List
 from langchain_core.tools import tool
 from urllib.parse import urlsplit, urlunsplit
 
@@ -46,6 +46,24 @@ def _sanitize_url(url: str) -> str:
 
     sanitized = _clean_display_text(sanitized, MAX_URL_LENGTH)
     return f"{sanitized} [쿼리 생략]" if "?" in raw_url else sanitized
+
+
+def _is_localhost_url(url: str) -> int:
+    """Streamlit 로컬 앱 주소와 루프백 주소를 방문 기록에서 제외합니다."""
+    try:
+        host = urlsplit(str(url or "")).hostname
+    except ValueError:
+        return 0
+
+    if not host:
+        return 0
+    if host.rstrip(".") == "localhost":
+        return 1
+    try:
+        return int(ipaddress.ip_address(host).is_loopback)
+    except ValueError:
+        return 0
+
 
 def _get_chrome_history_path() -> str:
     """Windows 환경의 Chrome History 기본 파일 경로를 반환합니다."""
@@ -88,7 +106,7 @@ def _fetch_browser_history(
     end_datetime: str = "",
 ) -> str:
     """
-    Chrome 방문 기록을 안전하게 복사하여 검색하고, 
+    Chrome 방문 기록을 read-only SQLite 연결로 검색하고,
     LLM이 바로 해석할 수 있는 요약 텍스트로 반환합니다.
     """
     start_bound = None
@@ -117,43 +135,6 @@ def _fetch_browser_history(
     if not os.path.exists(history_src):
         return f"[오류] Chrome 방문 기록 파일이 존재하지 않습니다: {history_src}"
 
-    # 고유한 임시 파일을 사용해 동시 조회 간 파일 경합을 막습니다.
-    temp_file = tempfile.NamedTemporaryFile(
-        prefix="localagent_chrome_history_", suffix=".db", delete=False
-    )
-    temp_history = temp_file.name
-    temp_file.close()
-
-    try:
-        journal_path = f"{history_src}-journal"
-        journal_size = (
-            os.path.getsize(journal_path) if os.path.exists(journal_path) else 0
-        )
-        if journal_size:
-            raise RuntimeError(
-                "Chrome history journal is active; close Chrome and retry"
-            )
-
-        source_before = os.stat(history_src)
-        print("[Browser] source history copy started", flush=True)
-        shutil.copy2(history_src, temp_history)
-        source_after = os.stat(history_src)
-        if (
-            source_before.st_size != source_after.st_size
-            or source_before.st_mtime_ns != source_after.st_mtime_ns
-            or (os.path.exists(journal_path) and os.path.getsize(journal_path) > 0)
-        ):
-            raise RuntimeError("Chrome history changed during copy; retry the query")
-        print("[Browser] source history copy completed", flush=True)
-    except Exception as e:
-        if os.path.exists(temp_history):
-            try:
-                os.remove(temp_history)
-            except OSError:
-                pass
-        print(f"[Browser] source history copy failed: {e}", flush=True)
-        return f"[오류] 방문 기록 복사 실패 (Chrome DB가 사용 중일 수 있습니다): {e}"
-
     query = """
     SELECT 
         title, 
@@ -162,6 +143,7 @@ def _fetch_browser_history(
         datetime(last_visit_time / 1000000 - 11644473600, 'unixepoch', 'localtime') AS visit_time
     FROM urls
     WHERE 1 = 1
+            AND is_localhost_url(url) = 0
     """
     params: List[Any] = []
 
@@ -185,29 +167,37 @@ def _fetch_browser_history(
     query += " ORDER BY last_visit_time DESC LIMIT ?"
     params.append(limit)
 
-    try:
-        print("[Browser] temp DB connect/query started", flush=True)
-        conn = sqlite3.connect(temp_history, timeout=3.0)
-        conn.execute("PRAGMA busy_timeout = 3000")
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
-        print(f"[Browser] temp DB query completed: {len(rows)} rows", flush=True)
-    except Exception as e:
-        print(f"[Browser] temp DB query failed: {e}", flush=True)
-        return f"[오류] SQLite 조회 실패: {e}"
-    finally:
-        if "conn" in locals():
-            try:
+    rows = None
+    for use_nolock in (False, True):
+        conn = None
+        try:
+            lock_option = "&nolock=1" if use_nolock else ""
+            source_uri = (
+                f"{Path(history_src).resolve().as_uri()}?mode=ro{lock_option}"
+            )
+            if use_nolock:
+                print("[Browser] retrying read-only query without file locks", flush=True)
+            else:
+                print("[Browser] source history query started", flush=True)
+            conn = sqlite3.connect(source_uri, uri=True, timeout=0.25)
+            conn.execute("PRAGMA busy_timeout = 250")
+            conn.create_function("is_localhost_url", 1, _is_localhost_url)
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            print(f"[Browser] source history query completed: {len(rows)} rows", flush=True)
+            break
+        except sqlite3.OperationalError as error:
+            if not use_nolock and "locked" in str(error).lower():
+                continue
+            print(f"[Browser] source history query failed: {error}", flush=True)
+            return f"[오류] SQLite 조회 실패: {error}"
+        except Exception as error:
+            print(f"[Browser] source history query failed: {error}", flush=True)
+            return f"[오류] SQLite 조회 실패: {error}"
+        finally:
+            if conn is not None:
                 conn.close()
-            except Exception:
-                pass
-        if os.path.exists(temp_history):
-            try:
-                os.remove(temp_history)
-            except Exception:
-                pass
 
     if not rows:
         filter_desc = f"키워드: '{clean_kw}', " if clean_kw else ""
@@ -251,21 +241,7 @@ def search_browser_history(
     start_datetime: str = "",
     end_datetime: str = "",
 ) -> str:
-    """Chrome 방문 기록을 키워드와 날짜·시간 범위로 조회합니다.
-
-    날짜·시간 범위는 ISO 형식(YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM:SS)의
-    start_datetime과 end_datetime으로 전달합니다. 날짜만 주어지면 시작은
-    그 날 00:00:00, 종료는 23:59:59로 해석합니다. 예를 들어 특정 날짜의
-    오후 5시 이전은 그 날짜 00:00:00부터 17:00:00까지 지정합니다.
-    두 경계가 모두 없을 때만 days(기본 최근 7일)를 사용합니다.
-    시작이 종료보다 늦으면 조회하지 않고 사용자에게 범위를 확인하도록 안내합니다.
-    상대 시각(예: 어제, 오늘 오전)이 포함되면 get_current_time을 먼저 호출해
-    현재 날짜를 확인하고, 사용자의 현지 시각 기준 절대 범위로 변환한 뒤 이 도구를 별도로 호출합니다.
-    시간 조회와 방문 기록 조회를 한 번의 응답에서 동시에 요청하지 않습니다.
-    예를 들어 '어제 오전'은 전날 00:00:00부터 11:59:59까지로 지정합니다.
-    현재 날짜를 추측하지 말고, 시간 조회 결과가 없을 때만 사용자에게 날짜를 확인합니다.
-    기본 최대 결과는 최근 30개입니다.
-    """
+    """Chrome 방문 기록을 조회합니다."""
     started_at = time_module.monotonic()
     print("[Browser] search_browser_history enter", flush=True)
     try:
@@ -289,32 +265,29 @@ BROWSER_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_browser_history",
-            "description": (
-                "사용자의 Chrome 브라우저 방문 기록(URL, 페이지 제목, 방문 시각)을 조회합니다. "
-                "특정 주제나 사이트를 방문했던 기억을 찾거나, 최근 방문한 페이지 목록을 확인할 때 사용합니다."
-            ),
+            "description": "Chrome 방문 기록을 조회합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "keyword": {
                         "type": "string",
-                        "description": "검색할 키워드 (웹페이지 제목이나 URL에 포함된 단어). 특정 키워드 없이 최근 전체 기록을 보려면 빈 문자열로 지정합니다."
+                        "description": "페이지 제목 또는 URL 검색어. 기본값은 빈 문자열입니다."
                     },
                     "days": {
                         "type": "integer",
-                        "description": "조회 기간(일). 사용자가 기간을 말하지 않으면 7일, 지정하면 해당 일수"
+                        "description": "날짜 경계가 없을 때 조회할 최근 일수. 기본값은 7입니다."
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "가져올 최대 결과 개수 (기본값: 최근 30개)"
+                        "description": "최대 결과 개수. 기본값은 30입니다."
                     },
                     "start_datetime": {
                         "type": "string",
-                        "description": "선택적 시작 경계. 상대 날짜·시간은 get_current_time을 먼저 호출해 기준 날짜를 확인한 뒤 계산한 절대 날짜·시각을 현지 ISO 형식 YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM:SS[.ffffff]로 전달합니다. 날짜만 지정하면 해당 날짜 00:00:00. 예: 2026-10-10T00:00:00."
+                        "description": "선택적 시작 경계. ISO 날짜 또는 현지 날짜·시각입니다."
                     },
                     "end_datetime": {
                         "type": "string",
-                        "description": "선택적 종료 경계. 사용자가 지정한 종료 날짜·시각을 현지 ISO 형식 YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM:SS[.ffffff]로 전달합니다. 날짜만 지정하면 해당 날짜 23:59:59.999999까지 포함합니다. 특정 시각의 해당 초 전체를 포함하려면 .999999를 붙입니다. 예: 2026-10-10T17:00:00. 특정 날짜 오후 5시 이전은 시작도 그 날짜 00:00:00으로 지정합니다. 시작 경계가 종료보다 늦으면 호출 전에 사용자에게 확인합니다."
+                        "description": "선택적 종료 경계. ISO 날짜 또는 현지 날짜·시각입니다."
                     }
                 },
                 "required": []

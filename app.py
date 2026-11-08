@@ -4,6 +4,7 @@ import uuid
 import streamlit as st
 from config.settings import MODEL_PROFILES, DEFAULT_PROFILE
 from engine import run_agent_engine
+from engine import delete_room_checkpoint, run_agent_engine
 from prompt_loader import get_available_personas
 from room_manager import (
     get_available_tool_keys,
@@ -95,6 +96,8 @@ def confirm_clear_dialog(room_id: str):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("삭제 확인", type="primary", use_container_width=True):
+            room = st.session_state.rooms[room_id]
+            delete_room_checkpoint(str(room.get("thread_id") or room_id))
             st.session_state.rooms[room_id]["messages"] = []
             save_room_state(
                 st.session_state.rooms,
@@ -114,10 +117,10 @@ def confirm_delete_room_dialog(room_id: str):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("삭제 확인", type="primary", use_container_width=True):
-            # 1. 방 삭제
+            room = st.session_state.rooms[room_id]
+            delete_room_checkpoint(str(room.get("thread_id") or room_id))
             del st.session_state.rooms[room_id]
             
-            # 2. 남은 방 포인터 재조정
             remaining_keys = list(st.session_state.rooms.keys())
             st.session_state.active_room_id = remaining_keys[0] if remaining_keys else None
             save_room_state(

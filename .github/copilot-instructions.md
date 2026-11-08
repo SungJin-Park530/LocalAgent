@@ -5,3 +5,7 @@
 - **Do NOT launch browsers or attempt GUI testing**: Web UI testing and manual validation will be performed directly by the user.
 - **Allowed commands**: You may only inspect files, check syntax, run non-interactive unit tests (e.g., `pytest`), or check imports if explicitly requested.
 - **Focus**: Limit your role to code generation, refactoring, and static code verification. Do not start the application yourself.
+
+## Test Organization
+- Keep all test code and test scripts in the repository-root `tests/` directory.
+- When creating a test, add it under `tests/`; do not create test files in the repository root.
