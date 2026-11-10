@@ -10,3 +10,7 @@ langchain-ollama
 
 # 대화 세션 영속화 (SQLite 체크포인터)
 langgraph-checkpoint-sqlite
+
+# CPU semantic intent routing
+sentence-transformers<6
+transformers<5

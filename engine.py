@@ -3,7 +3,7 @@ import sqlite3
 import time
 import json
 import warnings
-from typing import Annotated, Generator, Literal, TypedDict
+from typing import Annotated, Generator, Literal, Optional, TypedDict
 
 from langchain_core.messages import (
     AIMessage,
@@ -30,10 +30,10 @@ from config.settings import (
     DEFAULT_PROFILE,
     DEFAULT_SUB_PROFILE,
     MODEL_PROFILES,
-    SYSTEM_PROMPTS_DIR,
 )
 from prompt_loader import assemble_system_prompt
-from room_manager import get_tool_schemas_for_prompt_tools
+from room_manager import TOOL_GROUP_SCHEMAS, get_tool_schemas_for_prompt_tools
+from router_semantic import classify_intent
 from tools import CHAT_TOOLS, TOOL_REGISTRY
 
 THINKING_SOFT_CAP_CHARS = 4000
@@ -62,16 +62,18 @@ def delete_room_checkpoint(
 # ---------------------------------------------------------
 # 3. 모델 및 상태(State) 정의
 # ---------------------------------------------------------
-router_model_name = MODEL_PROFILES[DEFAULT_SUB_PROFILE]["name"]
-router_llm = ChatOllama(model=router_model_name, temperature=0.0)
+summary_model_name = MODEL_PROFILES[DEFAULT_SUB_PROFILE]["name"]
 summarizer_llm = ChatOllama(
-    model=router_model_name, temperature=0.2, num_predict=300
+    model=summary_model_name, temperature=0.2, num_predict=300
 )
 
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     route: str
+    route_score: float
+    missing_tool: Optional[str]
+    selected_tools: list[str]
     summary: str
     active_tools: list  # 방별로 부여된 도구 이름 리스트
 
@@ -80,51 +82,71 @@ class AgentState(TypedDict):
 # 4. 그래프 노드 정의
 # ---------------------------------------------------------
 def router_node(state: AgentState) -> dict:
-    """1.5B 경량 모델을 통한 초고속 의도 분류"""
-    last_user_msg = state["messages"][-1].content
+    """Classify the latest request and record unavailable tool groups."""
+    query = state["messages"][-1].content
+    route, score = classify_intent(query)
+    selected_tools = state.get("selected_tools", [])
+    missing_tool = (
+        route if route in {"browser", "files"} and route not in selected_tools else None
+    )
+    return {"route": route, "route_score": score, "missing_tool": missing_tool}
 
-    router_prompt_path = os.path.join(SYSTEM_PROMPTS_DIR, "01_router.md")
-    with open(router_prompt_path, "r", encoding="utf-8") as prompt_file:
-        router_prompt = prompt_file.read()
 
-    prompt = [
-        SystemMessage(content=router_prompt),
-        HumanMessage(content=last_user_msg),
-    ]
-    decision = router_llm.invoke(prompt).content.strip().lower()
+def preflight_node(state: AgentState) -> dict:
+    tool_labels = {
+        "files": "파일 탐색",
+        "browser": "브라우저 기록",
+    }
+    missing_tool = state.get("missing_tool")
+    tool_label = tool_labels.get(missing_tool, "요청하신 작업")
+    message = AIMessage(
+        content=(
+            f"요청하신 작업을 수행하려면 **[{tool_label}]** 도구가 필요합니다. "
+            "현재 채팅방에는 해당 도구가 비활성화되어 있으니, "
+            "사이드바 설정에서 도구를 추가하거나 해당 도구가 켜진 채팅방에서 "
+            "다시 요청해 주세요."
+        )
+    )
+    return {"messages": [message]}
 
-    if "browser" in decision:
-        route = "browser"
-    elif "time" in decision:
-        route = "time"
-    elif "weather" in decision:
-        route = "weather"
+
+def route_after_router(state: AgentState) -> Literal["preflight_node", "agent"]:
+    return "preflight_node" if state.get("missing_tool") else "agent"
+
+
+def _select_target_tools(
+    route: str,
+    selected_tools: list[str],
+    active_tool_instances: list,
+) -> list:
+    if route in {"browser", "files"} and route in selected_tools:
+        group_names = {
+            schema.get("function", {}).get("name")
+            for schema in TOOL_GROUP_SCHEMAS.get(route, [])
+        }
+        group_tools = [
+            tool for tool in active_tool_instances if tool.name in group_names
+        ]
+        candidates = [*group_tools, *CHAT_TOOLS]
+    elif route in {"browser", "files", "time", "weather"}:
+        candidates = list(CHAT_TOOLS)
     else:
-        route = "chat"
+        candidates = [*active_tool_instances, *CHAT_TOOLS]
 
-    return {"route": route}
+    unique_tools = {}
+    for tool in candidates:
+        unique_tools.setdefault(tool.name, tool)
+    return list(unique_tools.values())
 
 
 def agent_node(
     state: AgentState, main_llm: ChatOllama, active_tool_instances: list, system_prompt: str
 ) -> dict:
     route = state.get("route", "chat")
-
-    route_tool_names = {
-        "browser": "search_browser_history",
-        "time": "get_current_time",
-        "weather": "get_current_weather",
-    }
-    routed_tool_name = route_tool_names.get(route)
-    utility_tool_names = {tool.name for tool in CHAT_TOOLS}
-    target_tools = (
-        [
-            tool
-            for tool in active_tool_instances
-            if tool.name == routed_tool_name or tool.name in utility_tool_names
-        ]
-        if routed_tool_name
-        else active_tool_instances
+    target_tools = _select_target_tools(
+        route,
+        state.get("selected_tools", []),
+        active_tool_instances,
     )
 
     llm_runner = main_llm.bind_tools(target_tools) if target_tools else main_llm
@@ -325,6 +347,9 @@ def run_agent_engine(
     builder = StateGraph(AgentState)
     builder.add_node("router", with_node_logging("router", router_node))
     builder.add_node(
+        "preflight_node", with_node_logging("preflight_node", preflight_node)
+    )
+    builder.add_node(
         "agent",
         with_node_logging(
             "agent",
@@ -361,8 +386,13 @@ def run_agent_engine(
     # 1) 시작 진입점(Entrypoint) 연결 -> 에러 해결 핵심
     builder.add_edge(START, "router")
 
-    # 2) 라우터 -> 에이전트
-    builder.add_edge("router", "agent")
+    # 2) 라우터 -> 사전 점검 또는 에이전트
+    builder.add_conditional_edges(
+        "router",
+        route_after_router,
+        {"preflight_node": "preflight_node", "agent": "agent"},
+    )
+    builder.add_edge("preflight_node", END)
 
     # 3) 에이전트 완료 후 조건 분기 (도구 실행, 요약 노드, 종료)
     builder.add_conditional_edges(
@@ -410,7 +440,7 @@ def run_agent_engine(
     try:
         print("[Graph] stream creation started", flush=True)
         events = graph.stream(
-            {"messages": input_messages},
+            {"messages": input_messages, "selected_tools": selected_tools},
             config=config,
             stream_mode=["messages", "updates"],
         )
@@ -561,6 +591,10 @@ def run_agent_engine(
                             "name": tool_call["name"],
                             "args": tool_call.get("args", {}),
                         }
+                elif "preflight_node" in payload:
+                    message = payload["preflight_node"]["messages"][-1]
+                    for stream_event in consume_text(message.content, flush=True):
+                        yield stream_event
                 elif "tools" in payload:
                     for tool_msg in payload["tools"]["messages"]:
                         yield {
