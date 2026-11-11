@@ -87,7 +87,7 @@ def router_node(state: AgentState) -> dict:
     route, score = classify_intent(query)
     selected_tools = state.get("selected_tools", [])
     missing_tool = (
-        route if route in {"browser", "files"} and route not in selected_tools else None
+        route if route in {"browser", "files", "web"} and route not in selected_tools else None
     )
     return {"route": route, "route_score": score, "missing_tool": missing_tool}
 
@@ -96,6 +96,7 @@ def preflight_node(state: AgentState) -> dict:
     tool_labels = {
         "files": "파일 탐색",
         "browser": "브라우저 기록",
+        "web": "웹·쇼핑 검색",
     }
     missing_tool = state.get("missing_tool")
     tool_label = tool_labels.get(missing_tool, "요청하신 작업")
@@ -119,7 +120,7 @@ def _select_target_tools(
     selected_tools: list[str],
     active_tool_instances: list,
 ) -> list:
-    if route in {"browser", "files"} and route in selected_tools:
+    if route in {"browser", "files", "web"} and route in selected_tools:
         group_names = {
             schema.get("function", {}).get("name")
             for schema in TOOL_GROUP_SCHEMAS.get(route, [])
@@ -128,7 +129,7 @@ def _select_target_tools(
             tool for tool in active_tool_instances if tool.name in group_names
         ]
         candidates = [*group_tools, *CHAT_TOOLS]
-    elif route in {"browser", "files", "time", "weather"}:
+    elif route in {"browser", "files", "web", "time", "weather"}:
         candidates = list(CHAT_TOOLS)
     else:
         candidates = [*active_tool_instances, *CHAT_TOOLS]

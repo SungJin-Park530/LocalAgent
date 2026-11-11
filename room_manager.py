@@ -5,6 +5,7 @@ import tempfile
 from tools import ALL_SCHEMAS
 from tools.browser import BROWSER_SCHEMAS
 from tools.files import FILES_SCHEMAS
+from tools.web_shopping import WEB_SCHEMAS
 from tools import TOOL_REGISTRY
 from config.settings import BASE_DIR
 
@@ -14,6 +15,7 @@ ROOM_STATE_PATH = os.path.join(BASE_DIR, "data", "rooms.json")
 TOOL_GROUP_SCHEMAS = {
     "browser": BROWSER_SCHEMAS,
     "files": FILES_SCHEMAS,
+    "web": WEB_SCHEMAS,
 }
 
 
