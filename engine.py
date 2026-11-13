@@ -2,7 +2,7 @@ import os
 import sqlite3
 import time
 import json
-import warnings
+from pathlib import Path
 from typing import Annotated, Generator, Literal, Optional, TypedDict
 
 from langchain_core.messages import (
@@ -28,8 +28,8 @@ from config.settings import (
     BASE_DIR,
     CONTEXT_SUMMARY_THRESHOLD,
     DEFAULT_PROFILE,
-    DEFAULT_SUB_PROFILE,
     MODEL_PROFILES,
+    PROMPTS_DIR,
 )
 from prompt_loader import assemble_system_prompt
 from room_manager import TOOL_GROUP_SCHEMAS, get_tool_schemas_for_prompt_tools
@@ -62,12 +62,6 @@ def delete_room_checkpoint(
 # ---------------------------------------------------------
 # 3. 모델 및 상태(State) 정의
 # ---------------------------------------------------------
-summary_model_name = MODEL_PROFILES[DEFAULT_SUB_PROFILE]["name"]
-summarizer_llm = ChatOllama(
-    model=summary_model_name, temperature=0.2, num_predict=300
-)
-
-
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     route: str
@@ -75,7 +69,6 @@ class AgentState(TypedDict):
     missing_tool: Optional[str]
     selected_tools: list[str]
     summary: str
-    active_tools: list  # 방별로 부여된 도구 이름 리스트
 
 
 # ---------------------------------------------------------
@@ -205,8 +198,8 @@ def agent_node(
     return {"messages": [response]}
 
 
-def summarize_node(state: AgentState) -> dict:
-    """오래된 컨텍스트 요약 및 메시지 제거 (1.5B 처리)"""
+def summarize_node(state: AgentState, summary_llm: ChatOllama) -> dict:
+    """오래된 컨텍스트를 요약하고 메시지를 교체합니다."""
     existing_summary = state.get("summary", "")
     recent_messages = state["messages"][-4:]
     messages_to_summarize = state["messages"][:-4]
@@ -222,16 +215,19 @@ def summarize_node(state: AgentState) -> dict:
         dialogue_lines.append(f"{role}: {msg.content}")
     dialogue_text = "\n".join(dialogue_lines)
 
+    summary_prompt = Path(PROMPTS_DIR, "context_summary.md").read_text(
+        encoding="utf-8"
+    ).strip()
     prompt = [
         HumanMessage(
             content=(
+                f"{summary_prompt}\n\n"
                 f"기존 요약: {existing_summary if existing_summary else '없음'}\n\n"
                 f"[대화 내용]\n{dialogue_text}\n\n"
-                "위 대화의 핵심 맥락과 중요한 사실을 한국어 2~3문장으로 간결히 요약하세요."
             )
         )
     ]
-    res = summarizer_llm.invoke(prompt)
+    res = summary_llm.invoke(prompt, think=False)
     new_summary = res.content.strip()
 
     return {
@@ -243,32 +239,15 @@ def summarize_node(state: AgentState) -> dict:
 
 
 def should_summarize(
-    state: AgentState, token_model: ChatOllama
+    state: AgentState,
 ) -> Literal["summarize_node", "__end__"]:
     messages = state["messages"]
-    token_count = None
-    with warnings.catch_warnings(record=True) as token_warnings:
-        warnings.simplefilter("always", UserWarning)
-        try:
-            token_count = token_model.get_num_tokens_from_messages(messages)
-        except Exception:
-            pass
-
-    used_generic_tokenizer = any(
-        "Using fallback GPT-2 tokenizer" in str(warning.message)
-        for warning in token_warnings
+    total_chars = sum(
+        len(str(getattr(message, "content", "")))
+        + len(str(getattr(message, "tool_calls", "")))
+        for message in messages
     )
-    for warning in token_warnings:
-        if "Using fallback GPT-2 tokenizer" not in str(warning.message):
-            warnings.warn(warning.message, warning.category, stacklevel=2)
-
-    if token_count is None or used_generic_tokenizer:
-        total_chars = sum(
-            len(str(getattr(message, "content", "")))
-            + len(str(getattr(message, "tool_calls", "")))
-            for message in messages
-        )
-        token_count = int(total_chars / 2.5)
+    token_count = int(total_chars / 2.5)
 
     print(
         f"[컨텍스트 감시] 메시지 {len(messages)}개 | "
@@ -280,12 +259,12 @@ def should_summarize(
 
 
 def check_tool_or_summary(
-    state: AgentState, token_model: ChatOllama
+    state: AgentState,
 ) -> Literal["tools", "summarize_node", "__end__"]:
     last_msg = state["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "tools"
-    return should_summarize(state, token_model)
+    return should_summarize(state)
 
 
 def with_node_logging(node_name: str, node_function):
@@ -307,7 +286,6 @@ def with_node_logging(node_name: str, node_function):
 # ---------------------------------------------------------
 def run_agent_engine(
     user_message: str,
-    history: list,
     selected_persona: str | None,
     selected_tools: list[str],
     profile_key: str = DEFAULT_PROFILE,
@@ -327,6 +305,12 @@ def run_agent_engine(
         reasoning=opts.get("reasoning", True),
         repeat_penalty=1.15,  # 무한 반복 루프 억제
         stop=["<|im_end|>", "<|endoftext|>", "### Human:", "사용자:"],  # 발산 강제 차단
+    )
+    summary_llm = ChatOllama(
+        model=model_name,
+        temperature=0.2,
+        num_predict=400,
+        reasoning=False,
     )
     
     system_content = assemble_system_prompt(selected_persona, selected_tools)
@@ -381,7 +365,11 @@ def run_agent_engine(
 
     builder.add_node("tools", logged_tools_node)
     builder.add_node(
-        "summarize_node", with_node_logging("summarize_node", summarize_node)
+        "summarize_node",
+        with_node_logging(
+            "summarize_node",
+            lambda state: summarize_node(state, summary_llm),
+        ),
     )
     
     # 1) 시작 진입점(Entrypoint) 연결 -> 에러 해결 핵심
@@ -398,7 +386,7 @@ def run_agent_engine(
     # 3) 에이전트 완료 후 조건 분기 (도구 실행, 요약 노드, 종료)
     builder.add_conditional_edges(
         "agent",
-        lambda state: check_tool_or_summary(state, main_llm),
+        lambda state: check_tool_or_summary(state),
         {
             "tools": "tools",
             "summarize_node": "summarize_node",

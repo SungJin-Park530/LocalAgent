@@ -9,7 +9,6 @@ from tools.web_shopping import WEB_SCHEMAS
 from tools import TOOL_REGISTRY
 from config.settings import BASE_DIR
 
-PROMPTS_DIR = "prompts"
 ROOM_STATE_PATH = os.path.join(BASE_DIR, "data", "rooms.json")
 
 TOOL_GROUP_SCHEMAS = {
@@ -47,45 +46,9 @@ def get_tool_schemas_for_prompt_tools(selected_tools: list[str]) -> list[dict]:
                 included_names.add(name)
     return selected_schemas
 
-def get_available_prompts(prompts_dir: str = PROMPTS_DIR) -> list[dict]:
-    """
-    역할별 프롬프트 디렉터리에서 활성화된 .md 파일을 찾아 반환합니다.
-    UI 선택값에는 prompts/ 기준 상대 경로를 보존합니다.
-    """
-    files = []
-    for role in ("persona", "instructions", "tools", "workflow"):
-        role_dir = os.path.join(prompts_dir, role)
-        for current_dir, directories, filenames in os.walk(role_dir):
-            directories.sort()
-            for filename in sorted(filenames):
-                if filename.endswith(".md"):
-                    path = os.path.join(current_dir, filename)
-                    relative_path = os.path.relpath(path, prompts_dir).replace(os.sep, "/")
-                    files.append((relative_path, path))
-
-    prompt_list = []
-
-    for relative_path, path in files:
-        title = relative_path
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                first_line = file.readline().strip()
-                if first_line.startswith("#"):
-                    title = f"{relative_path} ({first_line.lstrip('#').strip()})"
-        except Exception:
-            pass
-
-        prompt_list.append({"filename": relative_path, "display": title})
-
-    return prompt_list
-
 def get_default_room_context() -> dict:
     """새로운 대화방을 위한 기본 세션 컨텍스트 구조 반환"""
-    return {
-        "cwd": None,             # 현재 작업/기준 디렉터리 경로
-        "last_keyword": "",      # 직전 검색 키워드
-        "last_exported": None    # 가장 최근 내보낸 파일 절대 경로
-    }
+    return {}
 
 def get_default_rooms() -> dict:
     """

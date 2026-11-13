@@ -3,7 +3,6 @@
 import uuid
 import streamlit as st
 from config.settings import MODEL_PROFILES, DEFAULT_PROFILE
-from engine import run_agent_engine
 from engine import delete_room_checkpoint, run_agent_engine
 from prompt_loader import get_available_personas
 from room_manager import (
@@ -55,7 +54,6 @@ def create_room_dialog():
         key="new_room_prompt_tools",
     )
 
-    col1, col2 = st.columns(2)
     col1, col2 = st.columns(2)
     with col1:
         if st.button("생성하기", type="primary", use_container_width=True):
@@ -219,8 +217,6 @@ if not st.session_state.rooms or not st.session_state.active_room_id:
 # 방이 존재하면 정상적으로 active_room 추출 후 기존 로직 진행
 active_room = st.session_state.rooms[st.session_state.active_room_id]
 
-col_title, col_settings = st.columns([0.85, 0.15])
-
 # 1) 헤더 및 설정 팝오버 배치 (가로 2단 컬럼)
 col_title, col_settings = st.columns([0.85, 0.15])
 
@@ -382,7 +378,6 @@ if user_input:
 
             generator = run_agent_engine(
                 user_message=user_input,
-                history=active_room["messages"][:-1],
                 selected_persona=active_room.get("persona"),
                 selected_tools=active_room.get("selected_tools", []),
                 profile_key=selected_model_key,

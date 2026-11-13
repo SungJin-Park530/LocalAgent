@@ -33,6 +33,9 @@ dist/
 
 # etc
 legacy/
+!legacy/
+legacy/*
+!legacy/agent.py
 search_result/
 
 # chat history

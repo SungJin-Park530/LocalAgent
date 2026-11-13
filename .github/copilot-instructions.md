@@ -9,3 +9,7 @@
 ## Test Organization
 - Keep all test code and test scripts in the repository-root `tests/` directory.
 - When creating a test, add it under `tests/`; do not create test files in the repository root.
+
+## Prompt Example Templates
+- Maintain a matching `.md.example` template for each system or functional prompt, including prompts under `prompts/tools/`, `prompts/workflow/`, and `prompts/context_summary.md`.
+- Exception: under `prompts/persona/`, do not create a separate example for each personalized character persona such as `01_persona_*.md`. Keep only `00_persona_general.md.example` and the representative sample `01_persona_name.md.example`.

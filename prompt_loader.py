@@ -25,16 +25,6 @@ def get_available_personas(prompts_dir: str = PROMPTS_DIR) -> list[dict[str, str
     return personas
 
 
-def get_available_prompt_tools(prompts_dir: str = PROMPTS_DIR) -> list[str]:
-    tools_dir = Path(prompts_dir) / "tools"
-    tool_keys = []
-    for path in sorted(tools_dir.glob("*.md")):
-        match = TOOL_PATTERN.match(path.name)
-        if match and not path.name.startswith("00_"):
-            tool_keys.append(match.group("key"))
-    return tool_keys
-
-
 def assemble_system_prompt(
     selected_persona: str | None,
     selected_tools: list[str],

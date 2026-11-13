@@ -1,5 +1,4 @@
 # 모델 설정값
-# 추후 example 분리
 import os
 
 # 프로젝트 루트 경로 (자동 감지)
@@ -12,13 +11,31 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # 기본 파일 내보내기 경로
 EXPORT_DIR = os.path.join(BASE_DIR, "search_result")
 os.makedirs(EXPORT_DIR, exist_ok=True)
+DEFAULT_EXPORT_FILENAME = "search_result.txt"
 
 # 검색 캐시 파일 경로
 CACHE_FILE_PATH = os.path.join(CACHE_DIR, "search_cache.json")
 
 # 프롬프트 디렉터리 경로
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
-SYSTEM_PROMPTS_DIR = os.path.join(PROMPTS_DIR, "system")
+
+# 파일 검색 시 최대 파일 검사 한도
+MAX_SCAN_LIMIT = 50000
+
+# 24k 컨텍스트 기준 약 50% 수준에서 트리거
+CONTEXT_SUMMARY_THRESHOLD = 12000
+
+# CPU 전용 시맨틱 의도 라우터 설정
+ROUTER_EMBEDDING_MODEL = "jinaai/jina-embeddings-v3"
+ROUTER_DEVICE = "cpu"
+ROUTER_SIMILARITY_THRESHOLD = 0.55
+
+# 외부 웹/쇼핑 검색 설정
+WEB_SEARCH_OVERFETCH = 40
+WEB_PAGE_MAX_CHARS = 3000
+WEB_PAGE_MAX_BYTES = 2_000_000
+WEB_REQUEST_TIMEOUT = 8.0
+WEB_SEARCH_MAX_RESULTS = 15
 
 # 모델명과 파라미터를 프로필 하나에서 함께 관리합니다.
 # 아래 이름과 수치는 설정 형식 예시이며 실제 모델/권장값이 아닙니다.
@@ -44,17 +61,8 @@ MODEL_PROFILES = {
             "reasoning": False,
             "description": "대체 모델"
         }
-    },
-    "internal_router": {
-        "name": "example-router-model:demo",
-        "internal": True,
-        "options": {
-            "temperature": 0.15,
-            "description": "라우터 및 대화 압축/요약 전용 모델"
-        }
     }
 }
 
 # 기본 선택 프로필
 DEFAULT_PROFILE = "default_model"
-DEFAULT_SUB_PROFILE = "internal_router"
