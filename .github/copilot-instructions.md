@@ -7,8 +7,10 @@
 - **Focus**: Limit your role to code generation, refactoring, and static code verification. Do not start the application yourself.
 
 ## Test Organization
-- Keep all test code and test scripts in the repository-root `tests/` directory.
-- When creating a test, add it under `tests/`; do not create test files in the repository root.
+- Keep only automated unit and regression tests in the repository-root `tests/` directory. When creating a test, add it under `tests/`; do not create test files in the repository root.
+- The `practice/` directory stores concept-validation and manually run scripts; exclude it from automated test runs.
+- Keep `tests/` runnable immediately without external services such as Ollama. Isolate all file and database I/O with `tmp_path` or `:memory:` so tests do not pollute the project root.
+- Do not rerun the entire test suite in separate processes at every step. Run tests related to the changed module, or run one combined `pytest -q` at the end of the task.
 
 ## Prompt Example Templates
 - Maintain a matching `.md.example` template for each system or functional prompt, including prompts under `prompts/tools/`, `prompts/workflow/`, and `prompts/context_summary.md`.
