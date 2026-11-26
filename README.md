@@ -11,6 +11,17 @@ Ollama 로컬 모델과 LangGraph를 기반으로 대화, 파일 작업, 시간�
 
 메인 모델 추론과 파일 처리는 로컬에서 수행합니다. 시맨틱 라우터는 최초 실행 시 임베딩 모델을 내려받을 수 있으며, 웹·쇼핑 검색과 날씨 조회에는 네트워크 연결이 필요합니다.
 
+또한 지속적으로 개발 및 업데이트되고 있으므로, 리드미 내용이 추가적으로 업데이트 되는것을 확인해주세요.
+
+## 누가 개발했나요?
+
+<table>
+  <tr>
+    <td><a href="https://sungjin-park530.github.io/web_portfolio/"><img src = "https://res.cloudinary.com/vrp8ghjs/image/upload/v1795673336/doc.png"></a></td>
+    <td>저 '박성진'이 기획부터 개발까지 모두 담당했습니다. </br> 좌측 이미지를 클릭하시면 <b>포트폴리오 페이지</b>로 이동합니다! </td>
+  </tr>
+</table>
+
 ---
 
 ## 주요 특징
